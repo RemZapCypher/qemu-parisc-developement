@@ -7,6 +7,7 @@
 #include "exec/address-spaces.h"
 
 #define PKT_BUF_SZ      1536
+#define RX_RING_SIZE    16
 
 #define PORT_RESET              0x00    /* reset 82596 */
 #define PORT_SELFTEST           0x01    /* selftest */
@@ -29,7 +30,7 @@ struct I82596State_st {
     uint16_t t_on;
     uint16_t t_off;
     bool throttle_state;
-
+    
     hwaddr scp;                     /* pointer to SCP */
     uint8_t sysbus;
     uint32_t scb;                   /* SCB */
