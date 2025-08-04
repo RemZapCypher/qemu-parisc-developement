@@ -3,7 +3,6 @@
  *
  * Copyright (c) 2019 Helge Deller <deller@gmx.de>
  * Additional improvement by Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
- * During GSOC 2025
  * This work is licensed under the GNU GPL license version 2 or later.
  *
  * This software was written to be compatible with the specification:
@@ -23,7 +22,7 @@
 #include "i82596.h"
 #include <zlib.h> /* for crc32 */
 
-// #define ENABLE_DEBUG    1
+#define ENABLE_DEBUG    1
 #if defined(ENABLE_DEBUG)
 #define DBG(x)          x
 #else
@@ -673,43 +672,34 @@ static void command_loop(I82596State *s)
         } else {
             next_cmd_addr = i82596_translate_address(s, next_cmd_addr, false);
         }
-
         /* Execute command based on type */
         switch (cmd & CMD_MASK) {
         case CmdNOp:
             /* No operation */
             break;
-
         case CmdSASetup:
             set_individual_address(s, s->cmd_p);
             break;
-
         case CmdConfigure:
             i82596_configure(s, s->cmd_p);
             break;
-
         case CmdTDR:
             /* get signal LINK */
             set_uint32(s->cmd_p + 8, s->lnkst);
             break;
-
         case CmdTx:
             i82596_xmit(s, s->cmd_p);
             break;
-
         case CmdMulticastList:
             set_multicast_list(s, s->cmd_p);
             break;
-
         case CmdDump:
             printf("Dumped statistics to memory at %08x\n", s->cmd_p + 8);
             break;
-
         case CmdDiagnose:
             printf("Command Diagnose not implemented\n");
             break;
         }
-
         bool end_processing = false;
         status = STAT_C | STAT_OK;
         set_uint16(s->cmd_p, status);
@@ -738,7 +728,6 @@ static void command_loop(I82596State *s)
         } else {
             /* Move to next command */
             if (next_cmd_addr == s->cmd_p) {
-                /* Circular reference, stop processing */
                 s->cmd_p = I596_NULL;
                 s->cu_status = CU_IDLE;
                 s->scb_status |= SCB_STATUS_CNA;
@@ -907,8 +896,6 @@ static void signal_ca(I82596State *s)
         /* CA after reset -> do init with new scp. */
         s->sysbus = get_byte(s->scp + 3); /* big endian */
         s->mode = (s->sysbus >> 1) & 0x03; /* m0 & m1 */
-
-        /* Get ISCP address - always a linear address regardless of mode */
         s->iscp = get_uint32(s->scp + 8);
 
         /* Get SCB address */
