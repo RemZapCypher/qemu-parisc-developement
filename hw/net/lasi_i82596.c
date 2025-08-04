@@ -29,8 +29,6 @@
 
 #define PORT_BYTEMASK           0x0f
 
-#define SWAP32(x)   (((uint32_t)(x) << 16) | ((((uint32_t)(x))) >> 16))
-
 static void lasi_82596_mem_write(void *opaque, hwaddr addr,
                             uint64_t val, unsigned size)
 {
@@ -42,7 +40,6 @@ static void lasi_82596_mem_write(void *opaque, hwaddr addr,
         i82596_h_reset(&d->state);
         break;
     case PA_CPU_PORT_L_ACCESS: {
-    printf("PA_CPU_PORT_L_ACCESS  size %d  addr %lx  val %lx\n", size, addr, (long)val);
         uint16_t wval = val & 0xFFFF;
         if (d->val_index == 0) {
             d->last_val = wval;

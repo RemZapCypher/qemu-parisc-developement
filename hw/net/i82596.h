@@ -6,8 +6,8 @@
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
 
-#define PKT_BUF_SZ      1536
 #define RX_RING_SIZE    16
+#define PKT_BUF_SZ      1536
 
 #define PORT_RESET              0x00    /* reset 82596 */
 #define PORT_SELFTEST           0x01    /* selftest */

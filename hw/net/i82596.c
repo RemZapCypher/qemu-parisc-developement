@@ -2,7 +2,7 @@
  * QEMU Intel i82596 (Apricot) emulation
  *
  * Copyright (c) 2019 Helge Deller <deller@gmx.de>
- * Later improved upon and extended by Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
+ * Additional improvement by Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
  * During GSOC 2025
  * This work is licensed under the GNU GPL license version 2 or later.
  *
@@ -23,7 +23,7 @@
 #include "i82596.h"
 #include <zlib.h> /* for crc32 */
 
-#define ENABLE_DEBUG    1
+// #define ENABLE_DEBUG    1
 #if defined(ENABLE_DEBUG)
 #define DBG(x)          x
 #else
@@ -31,32 +31,33 @@
 #endif
 #define USE_TIMER       1
 
-
-#define BITS(n, m) (((0xffffffffU << (31 - n)) >> (31 - n + m)) << m)
-
 #define MAX_MC_CNT      64
-
-#define ISCP_BUSY       0x0001
-#define TX_TIMEOUT	(HZ/20)
-#define I82596_SPEED_MBPS    10
-#define I82596_BYTES_PER_SEC (I82596_SPEED_MBPS * 1000000 / 8)
-
-
-
 #define I596_NULL       ((uint32_t)0xffffffff)
+#define BITS(n, m)      (((0xffffffffU << (31 - n)) >> (31 - n + m)) << m)
 
+/* ISCP "busy" flag (first byte) */
+#define ISCP_BUSY              0x01
 
-#define SCB_STATUS_CX   0x8000 /* CU finished command with I bit */
-#define SCB_STATUS_FR   0x4000 /* RU finished receiving a frame */
-#define SCB_STATUS_CNA  0x2000 /* CU left active state */
-#define SCB_STATUS_RNR  0x1000 /* RU left active state */
+#define I82596_SPEED_MBPS       10
+#define TX_TIMEOUT	            (HZ/20)
+#define I82596_BYTES_PER_SEC    (I82596_SPEED_MBPS * 1000000 / 8)
 
-#define SCB_COMMAND_ACK_MASK \
-(SCB_STATUS_CX | SCB_STATUS_FR | SCB_STATUS_CNA | SCB_STATUS_RNR)
+#define SCB_STATUS_CX   0x8000  /* CU finished command with I bit */
+#define SCB_STATUS_FR   0x4000  /* RU finished receiving a frame */
+#define SCB_STATUS_CNA  0x2000  /* CU left active state */
+#define SCB_STATUS_RNR  0x1000  /* RU left active state */
+#define SCB_ACK_MASK    0xF000  /* All interrupt acknowledge bits */
 
+/* 82596 Operational Modes */
 #define I82586_MODE                 0x00
 #define I82596_MODE_SEGMENTED       0x01
 #define I82596_MODE_LINEAR          0x02
+
+/* Operation mode flags from SYSBUS byte */
+#define SYSBUS_LOCK_EN         0x08
+#define SYSBUS_INT_ACTIVE_LOW  0x10
+#define SYSBUS_BIG_ENDIAN_32   0x80  /* Enhanced Big Endian (C-step) */
+#define SYSBUS_THROTTLE_MASK   0x60  /* Bus Throttle Timer trigger modes */
 
 /* SCB commands - Command Unit (CU) */
 #define SCB_CUC_NOP            0x00
@@ -74,25 +75,28 @@
 #define SCB_RUC_SUSPEND        0x03
 #define SCB_RUC_ABORT          0x04
 
+/* SCB statuses - Command Unit (CU) */
 #define CU_IDLE         0
 #define CU_SUSPENDED    1
 #define CU_ACTIVE       2
 
+/* SCB statuses - Receive Unit (RU) */
+#define RX_IDLE         0x00
+#define RX_SUSPENDED    0x01
+#define RX_NO_RESOURCES 0x02
+#define RX_READY        0x04
+#define RX_NO_RESO_RBD  0x0A
+#define RX_NO_MORE_RBD  0x0C
 
-#define RX_IDLE         0
-#define RX_SUSPENDED    1
-#define RX_NO_RESOURCES 2
-#define RX_READY        4
-#define RX_NO_RESO_RBD  (8 + RX_NO_RESOURCES)
-#define RX_NO_MORE_RBD  (8 + RX_READY)
 #define RFD_STATUS_TRUNC  0x0020  /* Frame truncated */
 #define RFD_STATUS_NOBUFS 0x0200  /* Out of buffer space */
 
-#define CMD_EOL         0x8000  /* The last command of the list, stop. */
+#define CMD_FLEX        0x0008  /* Enable flexible memory model */
+#define CMD_MASK        0x0007  /* Mask for command bits */
+
+#define CMD_EOL         0x8000  /* The last command of the list, stop, wrong use */
 #define CMD_SUSP        0x4000  /* Suspend after doing cmd. */
 #define CMD_INTR        0x2000  /* Interrupt after doing cmd. */
-
-#define CMD_FLEX        0x0008  /* Enable flexible memory model */
 
 enum commands {
         CmdNOp = 0, CmdSASetup = 1, CmdConfigure = 2, CmdMulticastList = 3,
@@ -108,20 +112,20 @@ enum commands {
 #define SIZE_MASK       0x3fff
 
 /* Global Flags fetched from config bytes */
-#define I596_PREFETCH       (s->config[0] & 0x80)
-#define SAVE_BAD_FRAMES     (s->config[2] & 0x80)   /* Save Bad Frames */
-#define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)   /* if 1, do not insert MAC in Tx Packet */
-#define I596_LOOPBACK       (s->config[3] >> 6)     /* loopback mode, 3 = external loopback */
-#define I596_PROMISC        (s->config[8] & 0x01)
-#define I596_BC_DISABLE     (s->config[8] & 0x02)   /* broadcast status */
-#define I596_NOCRC_INS      (s->config[8] & 0x08)   /* do not append CRC to Tx frame */
-#define I596_CRC16_32       (s->config[8] & 0x10)   /* CRC-16 or CRC-32 */
-#define I596_PADDING        (s->config[8] & 0x80)   /* Should we add padding?*/
-#define I596_MIN_FRAME_LEN  (s->config[10])         /* minimum frame length */
-#define I596_CRCINM         (s->config[11] & 0x04)  /* Rx CRC appended in memory */
-#define I596_MC_ALL         (s->config[11] & 0x20)
-#define I596_FULL_DUPLEX    (s->config[12] & 0x40)  /* full duplex mode */
-#define I596_MULTIIA        (s->config[13] & 0x40)
+#define I596_PREFETCH       (s->config[0] & 0x80)    /* Enable prefetch of data structures */
+#define SAVE_BAD_FRAMES     (s->config[2] & 0x80)    /* Store frames with errors in memory */
+#define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)    /* Skip MAC insertion in outgoing pkts */
+#define I596_LOOPBACK       (s->config[3] >> 6)      /* Determine the Loopback mode */
+#define I596_PROMISC        (s->config[8] & 0x01)    /* Receive all packets regardless of MAC */
+#define I596_BC_DISABLE     (s->config[8] & 0x02)    /* Disable reception of broadcast packets */
+#define I596_NOCRC_INS      (s->config[8] & 0x08)    /* Skip CRC appending for outgoing frames */
+#define I596_CRC16_32       (s->config[8] & 0x10)    /* Use CRC-32 if set, otherwise CRC-16 */
+#define I596_PADDING        (s->config[8] & 0x80)    /* Add padding to short frames */
+#define I596_MIN_FRAME_LEN  (s->config[10])          /* Minimum Ethernet frame length */
+#define I596_CRCINM         (s->config[11] & 0x04)   /* Store CRC with received frames */
+#define I596_MC_ALL         (s->config[11] & 0x20)   /* Receive all multicast packets */
+#define I596_FULL_DUPLEX    (s->config[12] & 0x40)   /* Full-duplex mode if set, half if clear */
+#define I596_MULTIIA        (s->config[13] & 0x40)   /* Enable multiple individual addresses */
 
 /* Physmem access functions */
 static uint8_t get_byte(uint32_t addr)
@@ -172,46 +176,47 @@ struct qemu_ether_header {
            be16_to_cpu(hdr->ether_type));       \
 } while (0)
 
-/* Mode Detection/Transition */
+
+/*
+ * Mode Transition of address function
+ * Note: As of now the 82596 is tested only for Linear Mode as it is most
+ * widely used by Linux and HPUX systems. This function is here for futureproofing
+ * our 82596 device model.
+ * According to the documentation the translation of addresses based on mode are
+ * done for the following cases: ISCP, SCB, CBP, RFD, TFD, 
+ * RBD, TBD, Rx Buffers, Tx Buffers
+ * Please refer to the documentation for more details.
+ */
 static inline uint32_t i82596_translate_address(I82596State *s, uint32_t addr, bool is_data_buffer)
 {
     if (addr == I596_NULL || addr == 0) {
         return addr;
     }
-
     switch (s->mode) {
     case I82586_MODE:
-        /* 82586 Mode */
         if (is_data_buffer) {
-            /* ISCP Address, Rx Buffers, Tx Buffers: 24-bit linear */
             return addr & 0x00FFFFFF;
         } else {
-            /* Command Block Pointers, Descriptors: Base (24) + Offset (16) */
             if (s->scb_base) {
                 return (s->scb_base & 0x00FFFFFF) + (addr & 0xFFFF);
             } else {
-                /* If no base set, treat as 24-bit linear */
                 return addr & 0x00FFFFFF;
             }
         }
-
+        break;
     case I82596_MODE_SEGMENTED:
-        /* 32-bit Segmented Mode */
         if (is_data_buffer) {
-            /* ISCP Address, Rx Buffers, Tx Buffers: 32-bit linear */
             return addr;
         } else {
-            /* Command Block Pointers, Descriptors: Base (32) + Offset (16) */
             if (s->scb_base) {
                 return s->scb_base + (addr & 0xFFFF);
             } else {
                 return addr;
             }
         }
-
+        break;
     case I82596_MODE_LINEAR:
     default:
-        /* 32-bit Linear Mode - all addresses are 32-bit linear */
         return addr;
     }
 }
@@ -253,15 +258,6 @@ static void set_multicast_list(I82596State *s, uint32_t addr)
     trace_i82596_set_multicast(mc_count);
 }
 
-static void set_rdt(I82596State *s, uint32_t rfd_p)
-{
-    /* Schedule with medium delay after descriptor update */
-    if (s->rx_status == RX_READY) {
-        timer_mod(s->flush_queue_timer,
-                 qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
-    }
-}
-
 void i82596_set_link_status(NetClientState *nc)
 {
     I82596State *s = qemu_get_nic_opaque(nc);
@@ -278,7 +274,7 @@ void i82596_set_link_status(NetClientState *nc)
 static void update_scb_status(I82596State *s)
 {
     s->scb_status = (s->scb_status & 0xf000)
-        | (s->cu_status << 8) | (s->rx_status << 4) | 8;
+        | (s->cu_status << 8) | (s->rx_status << 4);
     set_uint16(s->scb, s->scb_status);
 
 
@@ -400,6 +396,7 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
     }
 }
 
+/* Bus Throttle Functionality */
 static void i82596_bus_throttle_timer(void *opaque)
 {
     I82596State *s = opaque;
@@ -533,35 +530,36 @@ static void i82596_s_reset(I82596State *s)
     s->lnkst = 0x8000; /* initial link state: up */
     s->ca = s->ca_active = 0;
     s->send_irq = 0;
+
+    /* Clear the config array */
     memset(s->config, 0, sizeof(s->config));
 
-    s->t_on = 0xFFFF; /* Infinite T-ON */
+    /* Bus configurations */
+    s->t_on = 0xFFFF; /* T-ON initally */
     s->t_off = 0;     /* No idle phase */
-    s->throttle_state = true; /* Bus "ON" by default after reset */
+    s->throttle_state = true;
 
-    /* Stop throttle timer instead of starting it */
     if (s->throttle_timer) {
         timer_del(s->throttle_timer);
-
-        /* Restart throttle timer with default values to ensure
-           proper timing after reset */
         s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                        i82596_bus_throttle_timer, s);
-        /* Only schedule if we're in half-duplex mode where timing is critical */
         if (!I596_FULL_DUPLEX && s->t_on != 0xFFFF) {
             timer_mod(s->throttle_timer,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                      s->t_on * 1000);
         }
     }
-
-    /* Stop the flush queue timer */
     if (s->flush_queue_timer) {
         timer_del(s->flush_queue_timer);
     }
-
-    /* Ensure we send a reset notification interrupt */
     qemu_set_irq(s->irq, 1);
+}
+
+void i82596_h_reset(void *opaque)
+{
+    I82596State *s = opaque;
+
+    i82596_s_reset(s);
 }
 
 static void i82596_configure(I82596State *s, uint32_t addr)
@@ -579,20 +577,18 @@ static void i82596_configure(I82596State *s, uint32_t addr)
     s->config[2] |= 0x40;
     s->config[7]  &= 0xf7; /* clear zero bit */
     /* Preserve full duplex bit in config[12] - the OS will set this correctly */
-
     if (byte_cnt > 12) {
         s->config[12] &= 0x40; /* Preserve only full duplex bit */
         DBG(printf("Full duplex mode: %s\n", I596_FULL_DUPLEX ? "ON" : "OFF"));
     }
-
 
     if (s->rx_status == RX_READY) {
         timer_mod(s->flush_queue_timer,
             qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
     }
     s->config[13] |= 0x3f; /* set ones in byte 13 */
-    s->scb_status |= SCB_STATUS_CNA; /* CU left active state */
-    qemu_set_irq(s->irq, 1); /* Notify that configuration is done */
+    s->scb_status |= SCB_STATUS_CNA;
+    qemu_set_irq(s->irq, 1); /* Interrupt for configuration is done */
 }
 
 static void command_loop(I82596State *s)
@@ -603,9 +599,7 @@ static void command_loop(I82596State *s)
     DBG(printf("STARTING COMMAND LOOP cmd_p=%08x\n", s->cmd_p));
 
     while (s->cmd_p != I596_NULL && s->cmd_p != 0 && s->cu_status == CU_ACTIVE) {
-        /* To prevent overrlaps,
-         * Check if command is already in progress or completed
-         */
+        /* Check Status != BUSY in progress or completed */
         status = get_uint16(s->cmd_p);
         if (status & (STAT_C | STAT_B)) {
             /* Command already busy or complete, move to next command */
@@ -619,18 +613,12 @@ static void command_loop(I82596State *s)
             s->cmd_p = next_cmd_addr;
             continue;
         }
-
-        /* Mark command as busy */
+        /* Set status to BUSY */
         status = STAT_B;
         set_uint16(s->cmd_p, status);
-
-        /* Prepare completed status but write later */
-        status = STAT_C | STAT_OK;
-
         /* Get command word */
         cmd = get_uint16(s->cmd_p + 2);
         DBG(printf("Running command %04x at %08x\n", cmd, s->cmd_p));
-
         next_cmd_addr = get_uint32(s->cmd_p + 4);
         if (next_cmd_addr == 0) {
             next_cmd_addr = I596_NULL;
@@ -639,7 +627,7 @@ static void command_loop(I82596State *s)
         }
 
         /* Execute command based on type */
-        switch (cmd & 0x07) {
+        switch (cmd & CMD_MASK) {
         case CmdNOp:
             /* No operation */
             break;
@@ -666,20 +654,17 @@ static void command_loop(I82596State *s)
             break;
 
         case CmdDump:
-            DBG(printf("Dumped statistics to memory at %08x\n", s->cmd_p + 8));
+            printf("Dumped statistics to memory at %08x\n", s->cmd_p + 8);
             break;
 
         case CmdDiagnose:
             printf("Command Diagnose not implemented\n");
-            status = STAT_C; /* Completed but not OK */
             break;
         }
-
-        /* Update command status */
-        set_uint16(s->cmd_p, status);
-
-        /* Process command control flags */
+        
         bool end_processing = false;
+        status = STAT_C | STAT_OK;
+        set_uint16(s->cmd_p, status);
 
         /* Interrupt after doing cmd? */
         if (cmd & CMD_INTR) {
@@ -714,9 +699,7 @@ static void command_loop(I82596State *s)
                 s->cmd_p = next_cmd_addr;
             }
         }
-
         update_scb_status(s);
-
         if (end_processing || s->cu_status != CU_ACTIVE) {
             break;
         }
@@ -726,6 +709,14 @@ static void command_loop(I82596State *s)
 
     if (s->rx_status == RX_READY) {
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    }
+}
+
+static void schedule_packet_processing(I82596State *s, uint32_t rfd_p)
+{
+    if (s->rx_status == RX_READY) {
+        timer_mod(s->flush_queue_timer,
+                 qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
     }
 }
 
@@ -741,17 +732,16 @@ static void examine_scb(I82596State *s)
 {
     uint16_t command, cuc, ruc;
 
-    /* Get the SCB command word */
-    command = get_uint16(s->scb + 2);
-    cuc = (command >> 8) & 0x7; /* Command Unit Command */
-    ruc = (command >> 4) & 0x7; /* Receive Unit Command */
+    command = get_uint16(s->scb + 2);   /* Get the SCB command word */
+    cuc = (command >> 8) & 0x7;         /* Command Unit Command */
+    ruc = (command >> 4) & 0x7;         /* Receive Unit Command */
     DBG(printf("MAIN COMMAND %04x  cuc %02x ruc %02x\n", command, cuc, ruc));
 
     /* Clear the SCB command word */
     set_uint16(s->scb + 2, 0);
 
     /* Handle interrupt acknowledgment */
-    s->scb_status &= ~(command & SCB_COMMAND_ACK_MASK);
+    s->scb_status &= ~(command & SCB_ACK_MASK);
 
     /* Process Command Unit Command */
     switch (cuc) {
@@ -809,7 +799,7 @@ static void examine_scb(I82596State *s)
             s->rx_status = RX_NO_RESOURCES;
             s->scb_status |= SCB_STATUS_RNR;
         } else {
-            set_rdt(s, rfd);
+            schedule_packet_processing(s, rfd);
         }
         break;
 
@@ -945,8 +935,6 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
         set_uint32(val, 0xFFC00000);  /* Success signature */
         set_uint32(val + 4, 0);
 
-
-
         /* Clear bit 13 in the SCB status */
         s->scb_status &= ~SCB_STATUS_CNA;
         s->scb_status |= STAT_OK;
@@ -958,20 +946,13 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
         s->scp = bit_aligner_16(val);
         break;
     case PORT_ALTDUMP:
+        printf("Alternate dump command not implemented\n");
         break;
     case PORT_CA:
         DBG(printf("Channel attention\n"));
         signal_ca(s);
         break;
     }
-}
-
-
-void i82596_h_reset(void *opaque)
-{
-    I82596State *s = opaque;
-
-    i82596_s_reset(s);
 }
 
 static void i82596_record_error(I82596State *s, uint16_t error_type)
@@ -1158,8 +1139,7 @@ static ssize_t i82596_finalize_reception(I82596State *s, uint32_t rfd_p,
     /* Update SCB to point to next RFD */
     if (s->rx_status == RX_READY) {
         set_uint32(s->scb + 8, next_rfd);
-        /* Call set_rdt when updating the RFD pointer */
-        set_rdt(s, next_rfd);
+        schedule_packet_processing(s, next_rfd);
     }
 
     s->scb_status |= SCB_STATUS_FR; /* set "RU finished receiving frame" bit. */
