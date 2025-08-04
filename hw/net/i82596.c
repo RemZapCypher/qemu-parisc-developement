@@ -183,7 +183,7 @@ struct qemu_ether_header {
  * widely used by Linux and HPUX systems. This function is here for futureproofing
  * our 82596 device model.
  * According to the documentation the translation of addresses based on mode are
- * done for the following cases: ISCP, SCB, CBP, RFD, TFD, 
+ * done for the following cases: ISCP, SCB, CBP, RFD, TFD,
  * RBD, TBD, Rx Buffers, Tx Buffers
  * Please refer to the documentation for more details.
  */
@@ -576,10 +576,58 @@ static void i82596_configure(I82596State *s, uint32_t addr)
     s->config[2] &= 0x82; /* mask valid bits */
     s->config[2] |= 0x40;
     s->config[7]  &= 0xf7; /* clear zero bit */
-    /* Preserve full duplex bit in config[12] - the OS will set this correctly */
+
+    /* Configure throttling parameters to enforce 10Mbps speed limit */
     if (byte_cnt > 12) {
+        bool previous_duplex = I596_FULL_DUPLEX;
         s->config[12] &= 0x40; /* Preserve only full duplex bit */
-        DBG(printf("Full duplex mode: %s\n", I596_FULL_DUPLEX ? "ON" : "OFF"));
+
+        if (previous_duplex != I596_FULL_DUPLEX) {
+            DBG(printf("DUPLEX: Mode changed to %s duplex\n",
+                       I596_FULL_DUPLEX ? "FULL" : "HALF"));
+        }
+        DBG(printf("DUPLEX: Current mode is %s\n", I596_FULL_DUPLEX ? "FULL" : "HALF"));
+    }
+
+    /* Configure throttling parameters to enforce 10Mbps speed limit */
+    bool duplex_changed = false;
+    static bool last_duplex_state = false;
+
+    if (byte_cnt > 12) {
+        duplex_changed = ((I596_FULL_DUPLEX) != last_duplex_state);
+        if (duplex_changed) {
+            DBG(printf("DUPLEX: State transition from %s to %s\n",
+                       last_duplex_state ? "FULL" : "HALF",
+                       I596_FULL_DUPLEX ? "FULL" : "HALF"));
+        }
+        last_duplex_state = I596_FULL_DUPLEX;
+    }
+
+    /* Only update throttle parameters if they haven't been set or duplex mode changed */
+    if (s->t_on == 0xFFFF || duplex_changed) {
+        /* Calculate throttling parameters for 10Mbps */
+        uint32_t bytes_per_us = I82596_BYTES_PER_SEC / 1000000;
+        uint16_t packet_time_us;
+
+        /* Standard 1500 byte packet at 10Mbps takes ~1.2ms */
+        packet_time_us = 1500 / bytes_per_us; /* ~1200μs at 10Mbps */
+
+        if (I596_FULL_DUPLEX) {
+            /* Full duplex: less throttling needed */
+            s->t_on = packet_time_us * 5;
+            s->t_off = packet_time_us / 20; /* Very short off time */
+            DBG(printf("THROTTLE CONFIG: Full duplex - ON=%d, OFF=%d microseconds\n",
+                      s->t_on, s->t_off));
+        } else {
+            /* Half duplex: more throttling to simulate collisions and CSMA/CD */
+            s->t_on = packet_time_us;
+            s->t_off = packet_time_us / 5; /* 20% off time */
+            DBG(printf("THROTTLE CONFIG: Half duplex - ON=%d, OFF=%d microseconds\n",
+                      s->t_on, s->t_off));
+        }
+
+        /* Start throttling with new parameters */
+        i82596_load_throttle_timers(s, true);
     }
 
     if (s->rx_status == RX_READY) {
@@ -588,7 +636,7 @@ static void i82596_configure(I82596State *s, uint32_t addr)
     }
     s->config[13] |= 0x3f; /* set ones in byte 13 */
     s->scb_status |= SCB_STATUS_CNA;
-    qemu_set_irq(s->irq, 1); /* Interrupt for configuration is done */
+    qemu_set_irq(s->irq, 1);
 }
 
 static void command_loop(I82596State *s)
@@ -599,7 +647,7 @@ static void command_loop(I82596State *s)
     DBG(printf("STARTING COMMAND LOOP cmd_p=%08x\n", s->cmd_p));
 
     while (s->cmd_p != I596_NULL && s->cmd_p != 0 && s->cu_status == CU_ACTIVE) {
-        /* Check Status != BUSY in progress or completed */
+        /* Check status != BUSY in progress or completed */
         status = get_uint16(s->cmd_p);
         if (status & (STAT_C | STAT_B)) {
             /* Command already busy or complete, move to next command */
@@ -661,7 +709,7 @@ static void command_loop(I82596State *s)
             printf("Command Diagnose not implemented\n");
             break;
         }
-        
+
         bool end_processing = false;
         status = STAT_C | STAT_OK;
         set_uint16(s->cmd_p, status);
@@ -777,12 +825,13 @@ static void examine_scb(I82596State *s)
         break;
 
     case SCB_CUC_LOAD_THROTTLE:
-        bool external_trigger = (s->sysbus & 0x01);
-        i82596_load_throttle_timers(s, !external_trigger);
+            /* Load Throttle Timers, unless in 82596 mode */
+            bool external_trigger = (s->sysbus & I82586_MODE);
+            i82596_load_throttle_timers(s, !external_trigger);
         break;
 
     case SCB_CUC_LOAD_START:
-        i82596_load_throttle_timers(s, true);
+            i82596_load_throttle_timers(s, true);
         break;
     }
 
@@ -852,45 +901,36 @@ static void examine_scb(I82596State *s)
 
 static void signal_ca(I82596State *s)
 {
-    uint32_t iscp;
-
     /* trace_i82596_channel_attention(s); */
+    s->iscp = 0;
     if (s->scp) {
-        DBG(printf("RESET CA: scp %04lx: Words %04x %04x\n", s->scp, get_uint32(s->scp), get_uint32(s->scp + 8)));
         /* CA after reset -> do init with new scp. */
         s->sysbus = get_byte(s->scp + 3); /* big endian */
-        DBG(printf("SYSBUS = %02x\n", s->sysbus));
         s->mode = (s->sysbus >> 1) & 0x03; /* m0 & m1 */
 
         /* Get ISCP address - always a linear address regardless of mode */
-        iscp = get_uint32(s->scp + 8);
-        DBG(printf("ISCP address: 0x%08x\n", iscp));
+        s->iscp = get_uint32(s->scp + 8);
 
         /* Get SCB address */
-        s->scb = get_uint32(iscp + 4);
+        s->scb = get_uint32(s->iscp + 4);
 
         /* In segmented modes, we need to get the base address as well */
-        if (s->mode == I82586_MODE || s->mode == I82596_MODE_SEGMENTED) {
-            s->scb_base = get_uint32(iscp + 8); /* Get SCB base */
-            printf("SCB base set to 0x%08x\n", s->scb_base);
+        if (!(s->mode == I82596_MODE_LINEAR)){
+            s->scb_base = get_uint32(s->iscp + 8); /* Get SCB base */
         } else {
             s->scb_base = 0;
         }
 
-        /* Translate the SCB address if neccessary */
         s->scb = i82596_translate_address(s, s->scb, false);
         DBG(printf("Translated SCB address: 0x%08x\n", s->scb));
 
         /* Clear BUSY flag in ISCP, set CX and CNR to equal 1 in the SCB, clears the SCB command word,
          * sends an interrupt to the CPU, and awaits another Channel Attention signal. */
-        set_byte(iscp + 1, 0);
+        set_byte(s->iscp + 1, 0);
         s->scb_status |= SCB_STATUS_CX | SCB_STATUS_CNA;
         update_scb_status(s);
-        /* Clear the SCB command word */
         set_uint16(s->scb + 2, 0);
-        // avoid further initializations
         s->scp = 0;
-        // send irq
         qemu_set_irq(s->irq, 1);
         return;
     }
@@ -911,14 +951,29 @@ static void signal_ca(I82596State *s)
     }
 }
 
+static uint32_t bit_align_16(uint32_t val)
+{
+    return val & ~0x0f;
+}
+
 uint32_t i82596_ioport_readw(void *opaque, uint32_t addr)
 {
     return -1;
 }
 
-static uint32_t bit_aligner_16(int32_t val)
+
+static void i82596_self_test(I82596State *s, uint32_t val)
 {
-    return val & ~0x0f;
+    DBG(printf("Performing Self test\n"));
+    set_uint32(val, 0xFFC00000);  /* Success signature */
+    set_uint32(val + 4, 0);
+
+    /* Clear bit 13 in the SCB status */
+    s->scb_status &= ~SCB_STATUS_CNA;
+    s->scb_status |= STAT_OK;
+
+    qemu_set_irq(s->irq, 1);
+    update_scb_status(s);
 }
 
 void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
@@ -930,26 +985,16 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
         i82596_s_reset(s);
         break;
     case PORT_SELFTEST:
-        DBG(printf("Performing Self test\n"));
-        val = bit_aligner_16(val);
-        set_uint32(val, 0xFFC00000);  /* Success signature */
-        set_uint32(val + 4, 0);
-
-        /* Clear bit 13 in the SCB status */
-        s->scb_status &= ~SCB_STATUS_CNA;
-        s->scb_status |= STAT_OK;
-
-        qemu_set_irq(s->irq, 1);
-        update_scb_status(s);
+        val = bit_align_16(val);
+        i82596_self_test(s, val);
         break;
     case PORT_ALTSCP:
-        s->scp = bit_aligner_16(val);
+        s->scp = bit_align_16(val);
         break;
     case PORT_ALTDUMP:
         printf("Alternate dump command not implemented\n");
         break;
     case PORT_CA:
-        DBG(printf("Channel attention\n"));
         signal_ca(s);
         break;
     }
@@ -1618,7 +1663,6 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
     DBG(printf("Calling i82596_receive()...\n"));
     ret = i82596_receive(nc, buf, sz);
     DBG(printf("i82596_receive() returned: %zd\n", ret));
-    DBG(printf("Freeing temporary buffer\n"));
     g_free(buf);
     DBG(printf("====== i82596_receive_iov() END ======\n"));
     return ret;
@@ -1628,20 +1672,16 @@ const VMStateDescription vmstate_i82596 = {
     .name = "i82596",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
+    .fields = (VMStateField[]) {
         /* Device mode and configuration */
         VMSTATE_UINT8(mode, I82596State),
-        VMSTATE_UINT8(sysbus, I82596State),
-
-        /* Timers and throttle state */
-        VMSTATE_TIMER_PTR(flush_queue_timer, I82596State),
-        VMSTATE_TIMER_PTR(throttle_timer, I82596State),
         VMSTATE_UINT16(t_on, I82596State),
         VMSTATE_UINT16(t_off, I82596State),
         VMSTATE_BOOL(throttle_state, I82596State),
 
-        /* SCB and status registers */
-        VMSTATE_UINT64(scp, I82596State),
+        /* System addressing fields */
+        VMSTATE_UINT32(iscp, I82596State),
+        VMSTATE_UINT8(sysbus, I82596State),
         VMSTATE_UINT32(scb, I82596State),
         VMSTATE_UINT32(scb_base, I82596State),
         VMSTATE_UINT16(scb_status, I82596State),
@@ -1649,19 +1689,18 @@ const VMStateDescription vmstate_i82596 = {
         VMSTATE_UINT8(rx_status, I82596State),
         VMSTATE_UINT16(lnkst, I82596State),
 
-        /* Command processing */
+        /* Command state */
         VMSTATE_UINT32(cmd_p, I82596State),
         VMSTATE_INT32(ca, I82596State),
         VMSTATE_INT32(ca_active, I82596State),
         VMSTATE_INT32(send_irq, I82596State),
 
-        /* Configuration arrays */
+        /* Configuration data */
         VMSTATE_BUFFER(mult, I82596State),
         VMSTATE_BUFFER(config, I82596State),
 
         /* Transmit buffer */
         VMSTATE_BUFFER(tx_buffer, I82596State),
-
         VMSTATE_END_OF_LIST()
     }
 };
