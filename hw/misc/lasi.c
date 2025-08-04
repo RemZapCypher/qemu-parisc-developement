@@ -48,7 +48,7 @@ static bool lasi_chip_mem_valid(void *opaque, hwaddr addr,
         ret = true;
     }
 
-    trace_lasi_chip_mem_valid(addr, ret);
+    // trace_lasi_chip_mem_valid(addr, ret);
     return ret;
 }
 
@@ -108,7 +108,7 @@ static MemTxResult lasi_chip_read_with_attrs(void *opaque, hwaddr addr,
         g_assert_not_reached();
     }
 
-    trace_lasi_chip_read(addr, val);
+    // trace_lasi_chip_read(addr, val);
 
     *data = val;
     return ret;
@@ -120,7 +120,7 @@ static MemTxResult lasi_chip_write_with_attrs(void *opaque, hwaddr addr,
 {
     LasiState *s = opaque;
 
-    trace_lasi_chip_write(addr, val);
+    // trace_lasi_chip_write(addr, val);
 
     switch (addr) {
     case LASI_IRR:
