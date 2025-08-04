@@ -29,11 +29,10 @@
 #else
 #define DBG(x)          do { } while (0)
 #endif
-
 #define USE_TIMER       1
 
-#define BITS(n, m) (((0xffffffffU << (31 - n)) >> (31 - n + m)) << m)
 
+#define BITS(n, m) (((0xffffffffU << (31 - n)) >> (31 - n + m)) << m)
 
 #define MAX_MC_CNT      64
 
@@ -108,7 +107,7 @@ enum commands {
 #define I596_EOF        0x8000
 #define SIZE_MASK       0x3fff
 
-/* various flags in the chip config registers */
+/* Global Flags fetched from config bytes */
 #define I596_PREFETCH       (s->config[0] & 0x80)
 #define SAVE_BAD_FRAMES     (s->config[2] & 0x80)   /* Save Bad Frames */
 #define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)   /* if 1, do not insert MAC in Tx Packet */
@@ -124,7 +123,7 @@ enum commands {
 #define I596_FULL_DUPLEX    (s->config[12] & 0x40)  /* full duplex mode */
 #define I596_MULTIIA        (s->config[13] & 0x40)
 
-
+/* Physmem access functions */
 static uint8_t get_byte(uint32_t addr)
 {
     return ldub_phys(&address_space_memory, addr);
@@ -534,6 +533,7 @@ static void i82596_s_reset(I82596State *s)
     s->lnkst = 0x8000; /* initial link state: up */
     s->ca = s->ca_active = 0;
     s->send_irq = 0;
+    memset(s->config, 0, sizeof(s->config));
 
     s->t_on = 0xFFFF; /* Infinite T-ON */
     s->t_off = 0;     /* No idle phase */
@@ -542,8 +542,8 @@ static void i82596_s_reset(I82596State *s)
     /* Stop throttle timer instead of starting it */
     if (s->throttle_timer) {
         timer_del(s->throttle_timer);
-        
-        /* Restart throttle timer with default values to ensure 
+
+        /* Restart throttle timer with default values to ensure
            proper timing after reset */
         s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                        i82596_bus_throttle_timer, s);
@@ -559,7 +559,7 @@ static void i82596_s_reset(I82596State *s)
     if (s->flush_queue_timer) {
         timer_del(s->flush_queue_timer);
     }
-    
+
     /* Ensure we send a reset notification interrupt */
     qemu_set_irq(s->irq, 1);
 }
@@ -578,72 +578,21 @@ static void i82596_configure(I82596State *s, uint32_t addr)
     s->config[2] &= 0x82; /* mask valid bits */
     s->config[2] |= 0x40;
     s->config[7]  &= 0xf7; /* clear zero bit */
-
     /* Preserve full duplex bit in config[12] - the OS will set this correctly */
+
     if (byte_cnt > 12) {
         s->config[12] &= 0x40; /* Preserve only full duplex bit */
         DBG(printf("Full duplex mode: %s\n", I596_FULL_DUPLEX ? "ON" : "OFF"));
     }
 
-    s->config[13] |= 0x3f; /* set ones in byte 13 */
-
-    /* Configure throttling parameters to enforce 10Mbps speed limit */
-    if (byte_cnt > 12) {
-        bool previous_duplex = I596_FULL_DUPLEX;
-        s->config[12] &= 0x40; /* Preserve only full duplex bit */
-
-        if (previous_duplex != I596_FULL_DUPLEX) {
-            DBG(printf("DUPLEX: Mode changed to %s duplex\n",
-                       I596_FULL_DUPLEX ? "FULL" : "HALF"));
-        }
-        DBG(printf("DUPLEX: Current mode is %s\n", I596_FULL_DUPLEX ? "FULL" : "HALF"));
-    }
-
-    /* Configure throttling parameters to enforce 10Mbps speed limit */
-    bool duplex_changed = false;
-    static bool last_duplex_state = false;
-
-    if (byte_cnt > 12) {
-        duplex_changed = ((I596_FULL_DUPLEX) != last_duplex_state);
-        if (duplex_changed) {
-            DBG(printf("DUPLEX: State transition from %s to %s\n",
-                       last_duplex_state ? "FULL" : "HALF",
-                       I596_FULL_DUPLEX ? "FULL" : "HALF"));
-        }
-        last_duplex_state = I596_FULL_DUPLEX;
-    }
-
-    /* Only update throttle parameters if they haven't been set or duplex mode changed */
-    if (s->t_on == 0xFFFF || duplex_changed) {
-        /* Calculate throttling parameters for 10Mbps */
-        uint32_t bytes_per_us = I82596_BYTES_PER_SEC / 1000000;
-        uint16_t packet_time_us;
-
-        /* Standard 1500 byte packet at 10Mbps takes ~1.2ms */
-        packet_time_us = 1500 / bytes_per_us; /* ~1200μs at 10Mbps */
-
-        if (I596_FULL_DUPLEX) {
-            /* Full duplex: less throttling needed */
-            s->t_on = packet_time_us * 5;
-            s->t_off = packet_time_us / 20; /* Very short off time */
-            DBG(printf("THROTTLE CONFIG: Full duplex - ON=%d, OFF=%d microseconds\n",
-                      s->t_on, s->t_off));
-        } else {
-            /* Half duplex: more throttling to simulate collisions and CSMA/CD */
-            s->t_on = packet_time_us;
-            s->t_off = packet_time_us / 5; /* 20% off time */
-            DBG(printf("THROTTLE CONFIG: Half duplex - ON=%d, OFF=%d microseconds\n",
-                      s->t_on, s->t_off));
-        }
-
-        /* Start throttling with new parameters */
-        i82596_load_throttle_timers(s, true);
-    }
 
     if (s->rx_status == RX_READY) {
         timer_mod(s->flush_queue_timer,
-                qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
+            qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
     }
+    s->config[13] |= 0x3f; /* set ones in byte 13 */
+    s->scb_status |= SCB_STATUS_CNA; /* CU left active state */
+    qemu_set_irq(s->irq, 1); /* Notify that configuration is done */
 }
 
 static void command_loop(I82596State *s)
@@ -820,7 +769,7 @@ static void examine_scb(I82596State *s)
 
     case SCB_CUC_RESUME:
         /* Resume Command Unit */
-        if (s->cu_status == CU_SUSPENDED) {
+        if (s->cu_status != CU_ACTIVE) {
             s->cu_status = CU_ACTIVE;
         }
         break;
@@ -917,7 +866,7 @@ static void signal_ca(I82596State *s)
 
     /* trace_i82596_channel_attention(s); */
     if (s->scp) {
-        DBG(printf("RESET CA: scp %04lx: Words %04x %4x %04x\n", s->scp, get_uint32(s->scp), get_uint32(s->scp+4), get_uint32(s->scp+8)));
+        DBG(printf("RESET CA: scp %04lx: Words %04x %04x\n", s->scp, get_uint32(s->scp), get_uint32(s->scp + 8)));
         /* CA after reset -> do init with new scp. */
         s->sysbus = get_byte(s->scp + 3); /* big endian */
         DBG(printf("SYSBUS = %02x\n", s->sysbus));
@@ -942,7 +891,7 @@ static void signal_ca(I82596State *s)
         s->scb = i82596_translate_address(s, s->scb, false);
         DBG(printf("Translated SCB address: 0x%08x\n", s->scb));
 
-        /* Clear BUSY flag in ISCP, set CX and CNR to equal 1 in the SCB, clears the SCB command word, 
+        /* Clear BUSY flag in ISCP, set CX and CNR to equal 1 in the SCB, clears the SCB command word,
          * sends an interrupt to the CPU, and awaits another Channel Attention signal. */
         set_byte(iscp + 1, 0);
         s->scb_status |= SCB_STATUS_CX | SCB_STATUS_CNA;
@@ -977,6 +926,11 @@ uint32_t i82596_ioport_readw(void *opaque, uint32_t addr)
     return -1;
 }
 
+static uint32_t bit_aligner_16(int32_t val)
+{
+    return val & ~0x0f;
+}
+
 void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
 {
     I82596State *s = opaque;
@@ -986,22 +940,22 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
         i82596_s_reset(s);
         break;
     case PORT_SELFTEST:
+        DBG(printf("Performing Self test\n"));
+        val = bit_aligner_16(val);
         set_uint32(val, 0xFFC00000);  /* Success signature */
-        set_uint32(val + 4, 0);       /* No errors */
-        set_uint32(val + 8, 0);       /* No errors */
-        set_uint32(val + 12, 0);      /* No errors */
+        set_uint32(val + 4, 0);
 
-        
-        /* Clear bit 5 in the SCB status */
+
+
+        /* Clear bit 13 in the SCB status */
         s->scb_status &= ~SCB_STATUS_CNA;
         s->scb_status |= STAT_OK;
 
+        qemu_set_irq(s->irq, 1);
         update_scb_status(s);
-        
-        s->send_irq = 1;
         break;
     case PORT_ALTSCP:
-        s->scp = val & ~0x0f;
+        s->scp = bit_aligner_16(val);
         break;
     case PORT_ALTDUMP:
         break;
@@ -1186,7 +1140,7 @@ static ssize_t i82596_finalize_reception(I82596State *s, uint32_t rfd_p,
     size_t sz)
 {
     status |= STAT_C | STAT_OK | is_broadcast;
-    
+
     DBG(printf("Setting final RFD status: 0x%04x\n", status));
 
     set_uint16(rfd_p, status);
@@ -1366,7 +1320,7 @@ static int i82596_process_flexible_mode(I82596State *s, uint32_t rfd_p, uint32_t
         DBG(printf("Writing %d bytes of packet data to RFD\n", data_bytes));
         address_space_write(&address_space_memory, rfd_data_addr,
                           MEMTXATTRS_UNSPECIFIED, cur_buf_ptr, data_bytes);
-        
+
         /* Only write CRC if not in loopback mode */
         if (!I596_LOOPBACK && crc_ptr != NULL) {
             DBG(printf("Writing 4 bytes of CRC to RFD\n"));
@@ -1402,7 +1356,7 @@ static int i82596_process_flexible_mode(I82596State *s, uint32_t rfd_p, uint32_t
 
     int rbd_count = 0;
     bool all_data_processed = false;
-    
+
     /* Process RBD chain */
     while (*len > 0 && rbd != I596_NULL) {
         uint16_t buffer_size = get_uint16(rbd + 12) & SIZE_MASK;
@@ -1601,7 +1555,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t sz)
         DBG(printf("Data length with CRC: %zu\n", len));
         DBG(printf("CRC value: %08x\n", crc));
     } else {
-        DBG(printf("CRC not included in memory (CRCINM=%d, LOOPBACK=%d)\n", 
+        DBG(printf("CRC not included in memory (CRCINM=%d, LOOPBACK=%d)\n",
                  I596_CRCINM ? 1 : 0, I596_LOOPBACK));
     }
 
@@ -1680,24 +1634,12 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
         offset += iov[i].iov_len;
     }
     DBG(printf("All IOV segments copied, total size: %zu bytes\n", offset));
-
-    /* Print first few bytes for debugging */
-    if (sz >= 14) {
-        DBG(printf("Packet header: %02x:%02x:%02x:%02x:%02x:%02x -> %02x:%02x:%02x:%02x:%02x:%02x, type=%02x%02x\n",
-               buf[6], buf[7], buf[8], buf[9], buf[10], buf[11],  /* Source MAC */
-               buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],    /* Destination MAC */
-               buf[12], buf[13]));                                 /* EtherType */
-    }
-
-    /* Call the existing receive function */
+    PRINT_PKTHDR("Receive IOV:", buf);
     DBG(printf("Calling i82596_receive()...\n"));
     ret = i82596_receive(nc, buf, sz);
     DBG(printf("i82596_receive() returned: %zd\n", ret));
-
-    /* Clean up */
     DBG(printf("Freeing temporary buffer\n"));
     g_free(buf);
-
     DBG(printf("====== i82596_receive_iov() END ======\n"));
     return ret;
 }
