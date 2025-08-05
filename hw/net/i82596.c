@@ -113,15 +113,15 @@ enum commands {
 /* Global Flags fetched from config bytes */
 #define I596_PREFETCH       (s->config[0] & 0x80)    /* Enable prefetch of data structures */
 #define SAVE_BAD_FRAMES     (s->config[2] & 0x80)    /* Store frames with errors in memory */
-#define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)    /* Skip MAC insertion in outgoing pkts */
+#define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)    /* If 1, do not insert MAC in Tx Packet */
 #define I596_LOOPBACK       (s->config[3] >> 6)      /* Determine the Loopback mode */
 #define I596_PROMISC        (s->config[8] & 0x01)    /* Receive all packets regardless of MAC */
 #define I596_BC_DISABLE     (s->config[8] & 0x02)    /* Disable reception of broadcast packets */
-#define I596_NOCRC_INS      (s->config[8] & 0x08)    /* Skip CRC appending for outgoing frames */
+#define I596_NOCRC_INS      (s->config[8] & 0x08)    /* Do not append CRC to Tx frame */
 #define I596_CRC16_32       (s->config[8] & 0x10)    /* Use CRC-32 if set, otherwise CRC-16 */
 #define I596_PADDING        (s->config[8] & 0x80)    /* Add padding to short frames */
 #define I596_MIN_FRAME_LEN  (s->config[10])          /* Minimum Ethernet frame length */
-#define I596_CRCINM         (s->config[11] & 0x04)   /* Store CRC with received frames */
+#define I596_CRCINM         (s->config[11] & 0x04)   /* Rx CRC appended in memory */
 #define I596_MC_ALL         (s->config[11] & 0x20)   /* Receive all multicast packets */
 #define I596_FULL_DUPLEX    (s->config[12] & 0x40)   /* Full-duplex mode if set, half if clear */
 #define I596_MULTIIA        (s->config[13] & 0x40)   /* Enable multiple individual addresses */
