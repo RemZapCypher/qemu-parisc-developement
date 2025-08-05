@@ -30,7 +30,7 @@ struct I82596State_st {
     uint16_t t_on;
     uint16_t t_off;
     bool throttle_state;
-    
+
     hwaddr scp;                     /* pointer to SCP */
     uint32_t iscp;                  /* pointer to ISCP */
     uint8_t sysbus;
