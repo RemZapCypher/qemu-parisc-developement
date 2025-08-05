@@ -23,13 +23,13 @@ echo "Running QEMU..."
 #     -D hpuxtrace.log
 
 
-gdb --args ./build/qemu-system-hppa \
-    -trace "i82596_*" \
-    -trace "lasi_*" \
-    -accel tcg,thread=multi -m 512 \
-    -drive if=scsi,bus=0,index=4,file=OS_test/new_hpux.img,format=raw \
-    -net nic,model=lasi_82596 -net user -boot c \
-    -serial mon:stdio -nographic -D hpuxtrace.log
+# gdb --args ./build/qemu-system-hppa \
+#     -trace "i82596_*" \
+#     -trace "lasi_*" \
+#     -accel tcg,thread=multi -m 512 \
+#     -drive if=scsi,bus=0,index=4,file=OS_test/new_hpux.img,format=raw \
+#     -net nic,model=lasi_82596 -net user -boot c \
+#     -serial mon:stdio -nographic -D hpuxtrace.log
 
 # gdb --args ./build/qemu-system-hppa \
 #     -drive file=OS_test/debian-10/Linux-hppa-hdd-image.img \
@@ -41,21 +41,16 @@ gdb --args ./build/qemu-system-hppa \
 #     -nographic -net nic,model=lasi_82596 -net user \
 #     -D trace.log
 
-
-
-
-
-
-# ./build/qemu-system-hppa \
-#     -trace "i82596_*" \
-#     -trace "lasi_*" \
-#     -kernel OS_test/vmlinux \
-#     -drive file=OS_test/debian-12-hdd-2023.img \
-#     -nographic \
-#     -serial mon:stdio \
-#     -accel tcg,thread=multi \
-#     -smp cpus=4 \
-#     -append "root=/dev/sda5 rw console=ttyS0 debug ignore_loglevel" \
-#     -net nic,model=lasi_82596 \
-#     -net user \
-#     -D trace.log
+./build/qemu-system-hppa \
+    -trace "i82596_*" \
+    -trace "lasi_*" \
+    -kernel OS_test/vmlinux \
+    -drive file=OS_test/debian-12-hdd-2023.img \
+    -nographic \
+    -serial mon:stdio \
+    -accel tcg,thread=multi \
+    -smp cpus=4 \
+    -append "root=/dev/sda5 rw console=ttyS0 debug ignore_loglevel" \
+    -net nic,model=lasi_82596 \
+    -net user \
+    -D trace.log
