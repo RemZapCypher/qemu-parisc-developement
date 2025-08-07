@@ -1132,9 +1132,9 @@ static bool i82596_check_packet_filter(I82596State *s, const uint8_t *buf, uint1
     }
 }
 
-static size_t i82596_process_rbd(I82596State *s, uint32_t rbd_addr, 
-                                const struct iovec **current_iov, 
-                                size_t *current_iov_ofs, 
+static size_t i82596_process_rbd(I82596State *s, uint32_t rbd_addr,
+                                const struct iovec **current_iov,
+                                size_t *current_iov_ofs,
                                 size_t remaining_bytes,
                                 int *iovcnt_remaining)
 {
@@ -1143,27 +1143,27 @@ static size_t i82596_process_rbd(I82596State *s, uint32_t rbd_addr,
     uint32_t buf_addr = get_uint32(rbd_addr + 8);
     DBG(printf("RBD: addr=0x%08x status=0x%04x size=%d\n", rbd_addr, rbd_status, rbd_size));
     buf_addr = i82596_translate_address(s, buf_addr, true);
-    
+
     if (buf_addr == 0 || buf_addr == I596_NULL || rbd_size == 0) {
         DBG(printf("RBD: Invalid buffer addr=0x%08x size=%d\n", buf_addr, rbd_size));
         return 0;
     }
-    
+
     uint16_t copy_size = MIN(rbd_size, remaining_bytes);
     size_t buffer_bytes = 0;
-    
+
     /* Copy data from IOVs to buffer */
     while (buffer_bytes < copy_size && *iovcnt_remaining > 0) {
         size_t iov_copy = MIN(copy_size - buffer_bytes,
                             (*current_iov)->iov_len - *current_iov_ofs);
-                            
+
         address_space_write(&address_space_memory, buf_addr + buffer_bytes,
                           MEMTXATTRS_UNSPECIFIED,
                           (*current_iov)->iov_base + *current_iov_ofs, iov_copy);
-        
+
         buffer_bytes += iov_copy;
         *current_iov_ofs += iov_copy;
-        
+
         if (*current_iov_ofs == (*current_iov)->iov_len) {
             (*current_iov)++;
             *current_iov_ofs = 0;
@@ -1171,18 +1171,18 @@ static size_t i82596_process_rbd(I82596State *s, uint32_t rbd_addr,
             DBG(printf("RBD: Advanced to next iov, remaining=%d\n", *iovcnt_remaining));
         }
     }
-    
+
     /* Update RBD status and count */
     uint16_t new_status = rbd_status | BD_F;  /* Set F bit (buffer used) */
     if (remaining_bytes <= copy_size || *iovcnt_remaining == 0) {
         new_status |= BD_EOF;  /* Set EOF bit if this is the last buffer or no more IOVs */
         DBG(printf("RBD: Setting EOF bit, copied=%zu remain=%zu\n", buffer_bytes, remaining_bytes));
     }
-    
+
     set_uint16(rbd_addr, new_status);
     set_uint16(rbd_addr + 2, buffer_bytes | (new_status & 0xC000));
     DBG(printf("RBD: Updated status=0x%04x actual_count=%zu\n", new_status, buffer_bytes));
-    
+
     return buffer_bytes;
 }
 
@@ -1190,38 +1190,38 @@ static uint32_t i82596_find_available_rfd(I82596State *s, uint32_t start_rfd)
 {
     uint32_t rfd_addr = start_rfd;
     uint32_t first_rfd = start_rfd;
-    
+
     DBG(printf("RFD: Starting search at 0x%08x\n", start_rfd));
-    
+
     if (rfd_addr == 0 || rfd_addr == I596_NULL) {
         DBG(printf("RFD: Invalid start address\n"));
         return 0;
     }
-    
+
     do {
         uint16_t status = get_uint16(rfd_addr);
-        
+
         /* If this RFD is not complete, we can use it */
         if (!(status & STAT_C)) {
             DBG(printf("RFD: Found available at 0x%08x status=0x%04x\n", rfd_addr, status));
             return rfd_addr;
         }
-        
+
         DBG(printf("RFD: Skipping used RFD at 0x%08x status=0x%04x\n", rfd_addr, status));
-        
+
         /* Move to next RFD */
         uint32_t next_rfd = get_uint32(rfd_addr + 4);
         next_rfd = i82596_translate_address(s, next_rfd, false);
-        
+
         /* Check if we've wrapped around or hit the end */
         if (next_rfd == 0 || next_rfd == I596_NULL || next_rfd == first_rfd) {
             DBG(printf("RFD: End of chain at 0x%08x -> 0x%08x\n", rfd_addr, next_rfd));
             return 0;
         }
-        
+
         rfd_addr = next_rfd;
     } while (1);
-    
+
     return 0;  /* No available RFDs */
 }
 
@@ -1235,21 +1235,21 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
     uint8_t crc_buffer[4];
     size_t crc_size = 0;
     bool crc_valid = true;
-    
+
     DBG(printf("RX: Packet received size=%zu iovcnt=%d\n", size, iovcnt));
-    
+
     /* Basic validation checks */
     if (!i82596_validate_receive_state(s, &size, NULL, NULL)) {
         DBG(printf("RX: Failed validation check, dropping packet\n"));
         return -1;
     }
-    
+
     /* MAC address filtering */
     if (!i82596_check_packet_filter(s, filter_buf, &is_broadcast)) {
         DBG(printf("RX: Packet filtered out by MAC address filter\n"));
         return size;  /* Silently consume filtered packets */
     }
-    
+
     /* Determine data size and calculate CRC if needed */
     if (I596_LOOPBACK || I596_NOCRC_INS) {
         store_size = size;
@@ -1259,18 +1259,18 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
         crc_size = i82596_calculate_crc(s, filter_buf, size, crc_buffer);
         store_size = I596_CRCINM ? size : size - crc_size;  // Adjust for already included CRC
         DBG(printf("RX: Using size=%zu with crc_size=%zu\n", store_size, crc_size));
-        
+
         if (!crc_valid && !SAVE_BAD_FRAMES) {
             DBG(printf("RX: Dropping packet with invalid CRC\n"));
             return size;
         }
     }
-    
+
     /* Get current RFD address */
     uint32_t rfd_addr = get_uint32(s->scb + 8);
     rfd_addr = i82596_translate_address(s, rfd_addr, false);
     DBG(printf("RX: Current RFD at 0x%08x\n", rfd_addr));
-    
+
     /* Find an available RFD */
     rfd_addr = i82596_find_available_rfd(s, rfd_addr);
     if (rfd_addr == 0) {
@@ -1281,64 +1281,64 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
         qemu_set_irq(s->irq, 1);
         return -1;
     }
-    
+
     /* Mark RFD as busy */
     uint16_t rfd_status = get_uint16(rfd_addr);
     uint16_t rfd_cmd = get_uint16(rfd_addr + 2);
     rfd_status |= STAT_B;
     set_uint16(rfd_addr, rfd_status);
-    
+
     /* Check if using simplified or flexible mode */
     bool sf_bit = !(rfd_cmd & CMD_FLEX);
     size_t bytes_copied = 0;
-    
-    DBG(printf("RX: Using %s mode for 0x%08x, cmd=0x%04x\n", 
+
+    DBG(printf("RX: Using %s mode for 0x%08x, cmd=0x%04x\n",
               sf_bit ? "simplified" : "flexible", rfd_addr, rfd_cmd));
-    
+
     if (sf_bit) {
         /* Simplified mode: copy directly to buffer in RFD */
         uint32_t buffer_addr = rfd_addr + 16;
         size_t copy_size = MIN(store_size, PKT_BUF_SZ);
-        
+
         DBG(printf("RX: Simplified mode copying %zu bytes to 0x%08x\n", copy_size, buffer_addr));
-        
+
         /* Copy packet data to RFD buffer */
         const struct iovec *current_iov = iov;
         size_t current_iov_ofs = 0;
-        
+
         while (bytes_copied < copy_size) {
-            size_t iov_copy = MIN(copy_size - bytes_copied, 
+            size_t iov_copy = MIN(copy_size - bytes_copied,
                                 current_iov->iov_len - current_iov_ofs);
-                                
+
             address_space_write(&address_space_memory, buffer_addr + bytes_copied,
                               MEMTXATTRS_UNSPECIFIED,
                               current_iov->iov_base + current_iov_ofs, iov_copy);
-            
+
             bytes_copied += iov_copy;
             current_iov_ofs += iov_copy;
-            
+
             if (current_iov_ofs == current_iov->iov_len) {
                 current_iov++;
                 current_iov_ofs = 0;
             }
         }
-        
+
         /* If we couldn't copy the entire packet, mark as truncated */
         if (bytes_copied < store_size) {
             rfd_status |= RFD_STATUS_TRUNC;
             DBG(printf("RX: Packet truncated, copied=%zu total=%zu\n", bytes_copied, store_size));
         }
-        
+
         /* Update actual count with flags */
         set_uint16(rfd_addr + 12, bytes_copied | BD_F | BD_EOF);
-        
+
     } else {
         /* Flexible mode: use RBD chain */
         uint32_t rbd_addr = get_uint32(rfd_addr + 8);
         rbd_addr = i82596_translate_address(s, rbd_addr, false);
-        
+
         DBG(printf("RX: Flexible mode using RBD at 0x%08x\n", rbd_addr));
-        
+
         if (rbd_addr == 0 || rbd_addr == I596_NULL) {
             /* No valid RBD, mark as truncated */
             rfd_status |= RFD_STATUS_TRUNC | RFD_STATUS_NOBUFS;
@@ -1347,7 +1347,7 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
             const struct iovec *current_iov = iov;
             size_t current_iov_ofs = 0;
             size_t remaining = store_size;
-            
+
             /* Process RBD chain */
             while (rbd_addr != 0 && rbd_addr != I596_NULL && remaining > 0) {
                 int remaining_iovcnt = iovcnt - (current_iov - iov);
@@ -1356,29 +1356,29 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
                     break;  /* No more IOVs to process */
                 }
                 /* Process this RBD */
-                size_t bytes_this_buffer = i82596_process_rbd(s, rbd_addr, 
-                                                            &current_iov, 
-                                                            &current_iov_ofs, 
+                size_t bytes_this_buffer = i82596_process_rbd(s, rbd_addr,
+                                                            &current_iov,
+                                                            &current_iov_ofs,
                                                             remaining,
                                                             &remaining_iovcnt);
-                                                             
+
                 bytes_copied += bytes_this_buffer;
                 remaining -= bytes_this_buffer;
-                
-                DBG(printf("RX: Processed RBD 0x%08x, bytes=%zu, remaining=%zu\n", 
+
+                DBG(printf("RX: Processed RBD 0x%08x, bytes=%zu, remaining=%zu\n",
                          rbd_addr, bytes_this_buffer, remaining));
-                
+
                 /* Check if EOF bit was set on this RBD */
                 uint16_t rbd_status = get_uint16(rbd_addr);
                 if (rbd_status & BD_EOF) {
                     DBG(printf("RX: EOF bit set on RBD 0x%08x\n", rbd_addr));
                     break;
                 }
-                
+
                 /* Move to next RBD */
                 uint32_t next_rbd = get_uint32(rbd_addr + 4);
                 next_rbd = i82596_translate_address(s, next_rbd, false);
-                
+
                 /* Check if end of chain */
                 if (next_rbd == 0 || next_rbd == I596_NULL || next_rbd == rbd_addr) {
                     if (remaining > 0) {
@@ -1387,45 +1387,45 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
                     }
                     break;
                 }
-                
+
                 DBG(printf("RX: Moving to next RBD 0x%08x -> 0x%08x\n", rbd_addr, next_rbd));
                 rbd_addr = next_rbd;
             }
-            
+
             /* If we couldn't copy the entire packet, mark as truncated */
             if (bytes_copied < store_size) {
                 rfd_status |= RFD_STATUS_TRUNC;
                 DBG(printf("RX: Packet truncated, copied=%zu total=%zu\n", bytes_copied, store_size));
             }
-            
+
             /* Update RFD actual count */
             set_uint16(rfd_addr + 12, bytes_copied | BD_F | BD_EOF);
         }
     }
-    
+
     /* Update RFD status */
     rfd_status &= ~STAT_B;  /* Clear busy bit */
     rfd_status |= STAT_C;   /* Set complete bit */
-    
+
     /* Set OK bit if CRC is valid or we accept bad frames */
     if (crc_valid || SAVE_BAD_FRAMES) {
         rfd_status |= STAT_OK;
     }
-    
+
     set_uint16(rfd_addr, rfd_status);
     DBG(printf("RX: Completed RFD, status=0x%04x\n", rfd_status));
-    
+
     /* Handle EOL and suspend bits */
     if (rfd_cmd & CMD_SUSP) {
         s->rx_status = RX_SUSPENDED;
         s->scb_status |= SCB_STATUS_RNR;
         DBG(printf("RX: Suspending after this frame\n"));
     }
-    
+
     /* Get next RFD */
     uint32_t next_rfd = get_uint32(rfd_addr + 4);
     next_rfd = i82596_translate_address(s, next_rfd, false);
-    
+
     /* Check for end of list */
     if (rfd_cmd & CMD_EOL) {
         s->rx_status = RX_NO_MORE_RBD;
@@ -1435,14 +1435,14 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
         /* Update SCB to point to next RFD */
         set_uint32(s->scb + 8, next_rfd);
         DBG(printf("RX: Updated SCB to point to next RFD 0x%08x\n", next_rfd));
-        
+
         /* If in flexible mode, update next RFD's RBD pointer */
         if (!sf_bit) {
             uint32_t rbd_addr = get_uint32(rfd_addr + 8);
             rbd_addr = i82596_translate_address(s, rbd_addr, false);
-            
+
             DBG(printf("RX: Flexible mode - current RBD address is 0x%08x\n", rbd_addr));
-            
+
             /* Find next available RBD */
             uint32_t next_rbd = I596_NULL;
             if (rbd_addr != 0 && rbd_addr != I596_NULL) {
@@ -1451,14 +1451,14 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
                 while (curr_rbd != 0 && curr_rbd != I596_NULL) {
                     uint16_t rbd_status = get_uint16(curr_rbd);
                     DBG(printf("RX: Examining RBD 0x%08x, status=0x%04x\n", curr_rbd, rbd_status));
-                    
+
                     /* If this RBD is not marked as used, we found our starting point */
                     if (!(rbd_status & BD_F)) {
                         next_rbd = curr_rbd;
                         DBG(printf("RX: Found unused RBD 0x%08x\n", next_rbd));
                         break;
                     }
-                    
+
                     /* If this was the last buffer in the frame, move to next RBD */
                     if (rbd_status & BD_EOF) {
                         next_rbd = get_uint32(curr_rbd + 4);
@@ -1466,13 +1466,13 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
                         DBG(printf("RX: EOF bit set, next RBD is 0x%08x\n", next_rbd));
                         break;
                     }
-                    
+
                     /* Move to next RBD */
                     uint32_t prev_rbd = curr_rbd;
                     curr_rbd = get_uint32(curr_rbd + 4);
                     curr_rbd = i82596_translate_address(s, curr_rbd, false);
                     DBG(printf("RX: Moving to next RBD 0x%08x -> 0x%08x\n", prev_rbd, curr_rbd));
-                    
+
                     /* Check for circular references or end of chain */
                     if (curr_rbd == rbd_addr) {
                         DBG(printf("RX: Circular reference detected in RBD chain\n"));
@@ -1481,18 +1481,18 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
                     }
                 }
             }
-            
+
             /* Update next RFD's RBD pointer */
             if (next_rbd != I596_NULL && next_rbd != 0) {
                 set_uint32(next_rfd + 8, next_rbd);
-                DBG(printf("RX: Updated next RFD's (0x%08x) RBD pointer to 0x%08x\n", 
+                DBG(printf("RX: Updated next RFD's (0x%08x) RBD pointer to 0x%08x\n",
                           next_rfd, next_rbd));
             } else {
                 DBG(printf("RX: No valid next RBD found for next RFD 0x%08x\n", next_rfd));
             }
         }
     }
-    
+
     /* Update SCB status and trigger interrupt if needed */
     s->scb_status |= SCB_STATUS_FR;
     update_scb_status(s);
@@ -1507,7 +1507,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         .iov_base = (uint8_t *)buf,
         .iov_len = size
     };
-    
+
     return i82596_receive_iov(nc, &iov, 1);
 }
 
