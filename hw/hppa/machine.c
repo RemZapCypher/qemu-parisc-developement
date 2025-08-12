@@ -29,6 +29,7 @@
 #include "hw/pci-host/astro.h"
 #include "hw/pci-host/dino.h"
 #include "hw/misc/lasi.h"
+#include "hw/scsi/ncr53c710.h"
 #include "hppa_hardware.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -40,7 +41,8 @@
 #define HPA_POWER_BUTTON        (FIRMWARE_END - 0x10)
 static hwaddr soft_power_reg;
 
-#define enable_lasi_lan()       0
+#define enable_lasi_lan()       1
+#define enable_lasi_scsi()      1
 
 static DeviceState *lasi_dev;
 
@@ -358,10 +360,16 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
     MemoryRegion *rom_region;
     SysBusDevice *s;
 
-    /* SCSI disk setup. */
+    /* SCSI disk setup with NCR53C710 on LASI */
     if (drive_get_max_bus(IF_SCSI) >= 0) {
-        dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
-        lsi53c8xx_handle_legacy_cmdline(dev);
+        if (enable_lasi_scsi()) {
+            dev = ncr53c710_init(addr_space, LASI_SCSI_HPA,
+                qdev_get_gpio_in(lasi_dev, LASI_IRQ_SCSI_HPA));
+            ncr710_handle_legacy_cmdline(dev);
+        } else{
+            dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
+            lsi53c8xx_handle_legacy_cmdline(dev);
+        }
     }
 
     /* Graphics setup. */

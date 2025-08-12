@@ -360,3 +360,13 @@ scsi_generic_realize_blocksize(int blocksize) "block size %d"
 scsi_generic_aio_sgio_command(uint32_t tag, uint8_t cmd, uint32_t timeout) "generic aio sgio: tag=0x%x cmd=0x%x timeout=%u"
 scsi_generic_ioctl_sgio_command(uint8_t cmd, uint32_t timeout) "generic ioctl sgio: cmd=0x%x timeout=%u"
 scsi_generic_ioctl_sgio_done(uint8_t cmd, int ret, uint8_t status, uint8_t host_status) "generic ioctl sgio: cmd=0x%x ret=%d status=0x%x host_status=0x%x"
+
+# ncr53c710.c
+ncr710_reg_read(uint32_t addr, uint32_t val) "addr 0x%02x = 0x%02x"
+ncr710_reg_write(uint32_t addr, uint32_t val) "addr 0x%02x = 0x%02x"
+ncr710_scripts_execute(uint32_t dsp, uint32_t inst) "DSP=0x%08x INST=0x%08x"
+ncr710_irq_update(int level) "IRQ level %d"
+ncr710_dma_transfer(uint32_t addr, uint32_t count) "addr=0x%08x count=%d"
+ncr710_scsi_command(uint8_t target, uint8_t lun, uint8_t cdb0) "target %d lun %d CDB[0]=0x%02x"
+ncr710_phase_change(uint8_t old_phase, uint8_t new_phase) "phase %d -> %d"
+ncr710_bus_reset(void) "SCSI bus reset"
