@@ -39,15 +39,27 @@ struct I82596State_st {
     uint16_t scb_status;
     uint8_t cu_status, rx_status;
     uint16_t lnkst;
+    uint32_t last_tx_len;
+    uint32_t collision_events;
 
     uint32_t cmd_p;                 /* addr of current command */
     int ca;
     int ca_active;
     int send_irq;
-
+    
     /* Hash register (multicast mask array, multiple individual addresses). */
     uint8_t mult[8];
     uint8_t config[14];             /* config bytes from CONFIGURE command */
+
+    /* Statistical Counters */
+    uint32_t crc_err;
+    uint32_t align_err;
+    uint32_t resource_err;
+    uint32_t over_err;
+    uint32_t rcvdt_err;
+    uint32_t short_fr_error;
+    uint32_t total_frames;
+    uint32_t total_good_frames;
 
     uint8_t tx_buffer[PKT_BUF_SZ];
 };
