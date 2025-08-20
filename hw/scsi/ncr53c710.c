@@ -439,6 +439,7 @@ static void ncr710_dma_transfer(NCR710State *s);
 
 static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo)
 {
+    trace_ncr710_dma_fifo_init();
     fifo->head = 0;
     fifo->tail = 0;
     fifo->count = 0;
@@ -463,20 +464,28 @@ static void ncr710_dma_fifo_push(NCR710_DMA_FIFO *fifo, uint8_t data, uint8_t pa
         fifo->parity[fifo->head] = parity;
         fifo->head = (fifo->head + 1) % NCR710_DMA_FIFO_SIZE;
         fifo->count++;
+        trace_ncr710_dma_fifo_push(data, parity, fifo->count);
+    } else {
+        trace_ncr710_dma_fifo_overflow();
     }
 }
 
 static uint8_t ncr710_dma_fifo_pop(NCR710_DMA_FIFO *fifo, uint8_t *parity)
 {
     uint8_t data = 0;
+    uint8_t parity_val = 0;
 
     if (!ncr710_dma_fifo_empty(fifo)) {
         data = fifo->data[fifo->tail];
         if (parity) {
             *parity = fifo->parity[fifo->tail];
+            parity_val = *parity;
         }
         fifo->tail = (fifo->tail + 1) % NCR710_DMA_FIFO_SIZE;
         fifo->count--;
+        trace_ncr710_dma_fifo_pop(data, parity_val, fifo->count);
+    } else {
+        trace_ncr710_dma_fifo_underflow();
     }
 
     return data;
@@ -484,11 +493,14 @@ static uint8_t ncr710_dma_fifo_pop(NCR710_DMA_FIFO *fifo, uint8_t *parity)
 
 static void ncr710_dma_fifo_flush(NCR710_DMA_FIFO *fifo)
 {
+    int old_count = fifo->count;
     ncr710_dma_fifo_init(fifo);
+    trace_ncr710_dma_fifo_flush(old_count);
 }
 
 static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo)
 {
+    trace_ncr710_scsi_fifo_init();
     fifo->count = 0;
     memset(fifo->data, 0, sizeof(fifo->data));
     memset(fifo->parity, 0, sizeof(fifo->parity));
@@ -510,17 +522,22 @@ static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t 
         fifo->data[fifo->count] = data;
         fifo->parity[fifo->count] = parity;
         fifo->count++;
+        trace_ncr710_scsi_fifo_push(data, parity, fifo->count);
+    } else {
+        trace_ncr710_scsi_fifo_overflow();
     }
 }
 
 static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
 {
     uint8_t data = 0;
+    uint8_t parity_val = 0;
 
     if (!ncr710_scsi_fifo_empty(fifo)) {
         data = fifo->data[0];
         if (parity) {
             *parity = fifo->parity[0];
+            parity_val = *parity;
         }
 
         /* Shift remaining data */
@@ -529,6 +546,9 @@ static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
             fifo->parity[i] = fifo->parity[i + 1];
         }
         fifo->count--;
+        trace_ncr710_scsi_fifo_pop(data, parity_val, fifo->count);
+    } else {
+        trace_ncr710_scsi_fifo_underflow();
     }
 
     return data;
@@ -550,7 +570,9 @@ static uint32_t __attribute__((unused)) ncr710_read_memory_32(NCR710State *s, ui
     }
 
     /* NCR710 uses little endian for memory accesses regardless of register endianness */
-    return le32_to_cpu(value);
+    value = le32_to_cpu(value);
+    trace_ncr710_read_memory(addr, value);
+    return value;
 }
 
 
@@ -577,7 +599,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
     NCR710State *s = (NCR710State *)opaque;
     uint64_t ret = 0;
 
-    /* Debug: log all register reads */
     qemu_log("NCR710: READ addr=0x%02x size=%d\n", (int)addr, size);
 
     switch (addr) {
@@ -595,10 +616,13 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_SCID_REG:
         ret = s->scid;
-        /* If SCID is 0, return default chip ID that firmware expects */
-        if (ret == 0 || !(ret & 0x80)) {
-            ret = 0x80 | NCR710_DEFAULT_HOST_ID; /* Valid bit + SCSI ID 7 */
-            s->scid = ret; /* Store it back */
+        /* Ensure valid bit is always set for reads, but preserve written value */
+        if ((ret & 0x7F) == 0) {
+            /* If no ID is set, return default ID 7 with valid bit */
+            ret = 0x80 | NCR710_DEFAULT_HOST_ID;
+        } else {
+            /* Return written value with valid bit set */
+            ret |= 0x80;
         }
         break;
     case NCR710_SXFER_REG:
@@ -626,17 +650,21 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_DSTAT_REG:
         ret = s->dstat;
-        /* Reading DSTAT clears DMA interrupt status */
-        s->dstat = 0;
-        s->istat &= ~ISTAT_DIP;
-        ncr710_update_irq(s);
+        /* Reading DSTAT clears DMA interrupt status but preserves status flags */
+        if (s->dstat & (DSTAT_SSI | DSTAT_SIR | DSTAT_WTD | DSTAT_IID)) {
+            s->dstat &= ~(DSTAT_SSI | DSTAT_SIR | DSTAT_WTD | DSTAT_IID);
+            s->istat &= ~ISTAT_DIP;
+            ncr710_update_irq(s);
+        }
         break;
     case NCR710_SSTAT0_REG:
         ret = s->sstat0;
-        /* Reading SSTAT0 clears SCSI interrupt status */
-        s->sstat0 = 0;
-        s->istat &= ~ISTAT_SIP;
-        ncr710_update_irq(s);
+        /* Reading SSTAT0 clears SCSI interrupt status if any */
+        if (s->sstat0 != 0) {
+            s->sstat0 = 0;
+            s->istat &= ~ISTAT_SIP;
+            ncr710_update_irq(s);
+        }
         break;
     case NCR710_SSTAT1_REG:
         ret = s->sstat1;
@@ -840,6 +868,7 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
 
     default:
+        trace_ncr710_reg_read_unhandled(addr, size);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "NCR710: invalid read at offset 0x%x\n", (int)addr);
         break;
@@ -994,6 +1023,8 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
             uint8_t saved_ctest8 = s->ctest8;
             memset(s, 0, sizeof(NCR710State));
             s->ctest8 = saved_ctest8;  /* Preserve chip revision */
+            /* Restore DSTAT to DMA FIFO Empty after reset */
+            s->dstat = DSTAT_DFE;
             ncr710_dma_fifo_init(&s->dma_fifo);
             ncr710_scsi_fifo_init(&s->scsi_fifo);
         }
@@ -1109,6 +1140,7 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         break;
 
     default:
+        trace_ncr710_reg_write_unhandled(addr, val, size);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "NCR710: invalid write at offset 0x%x\n", (int)addr);
         break;
@@ -1121,6 +1153,7 @@ DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
     DeviceState *dev;
     SysBusDevice *sysbus;
 
+    trace_ncr710_create_sysbus(addr);
     dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
     sysbus = SYS_BUS_DEVICE(dev);
 
@@ -1137,7 +1170,23 @@ void ncr710_handle_legacy_cmdline(DeviceState *ncr_dev)
     SysBusNCR710State *sysbus_s = SYSBUS_NCR710_SCSI(ncr_dev);
     NCR710State *s = &sysbus_s->ncr710;
 
+    trace_ncr710_handle_legacy_cmdline();
+    qemu_log("NCR710: Handling legacy command line directly\n");
+    qemu_log("NCR710: Using bus: %p\n", &s->bus);
+
     scsi_bus_legacy_handle_cmdline(&s->bus);
+
+    /* Debug: Check what devices are now on the bus */
+    BusChild *kid;
+    int device_count = 0;
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        device_count++;
+        SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
+        qemu_log("NCR710: Legacy created device #%d: channel=%d target=%d lun=%d type=%s\n",
+                device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
+                object_get_typename(OBJECT(scsi_dev)));
+    }
+    qemu_log("NCR710: Legacy handler created %d devices\n", device_count);
 }
 
 /* Main initialization function expected by HPPA machine */
@@ -1146,6 +1195,7 @@ DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq i
     DeviceState *dev;
     SysBusDevice *sysbus;
 
+    trace_ncr710_device_init(addr);
     qemu_log("NCR710: Initializing device at 0x%08lx\n", addr);
 
     dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
@@ -1168,21 +1218,29 @@ static void ncr710_update_irq(NCR710State *s)
     /* Check if any interrupt conditions are active */
     if (s->istat & (ISTAT_SIP | ISTAT_DIP)) {
         irq_active = true;
+        trace_ncr710_irq_raise(s->sstat0, s->dstat);
+    } else {
+        trace_ncr710_irq_lower();
     }
 
     /* Update the IRQ line */
     if (s->irq) {
         qemu_set_irq(s->irq, irq_active ? 1 : 0);
     }
+
+    trace_ncr710_irq_update(irq_active ? 1 : 0);
 }
 
+/* We could have different storage devices right so all will be children?*/
 static void ncr710_arbitrate_bus(NCR710State *s)
 {
     /* Basic bus arbitration implementation */
     if (s->scntl0 & SCNTL0_START) {
         /* Start sequence initiated */
+        trace_ncr710_arbitrate_start();
         s->scripts.connected = false;
         s->scripts.initiator = true;
+        trace_ncr710_connected(false);
 
         /* Set arbitration in progress */
         s->sstat1 |= SSTAT1_AIP;
@@ -1191,8 +1249,54 @@ static void ncr710_arbitrate_bus(NCR710State *s)
         s->sstat1 |= SSTAT1_WOA;
         s->sstat1 &= ~SSTAT1_LOA;
         s->sstat1 &= ~SSTAT1_AIP;
+        trace_ncr710_arbitrate_won(s->scid & 0x07);
 
-        /* Update interrupt status */
+        if (s->sdid != 0) {
+            uint8_t target_id = 0;
+            for (int i = 0; i < 8; i++) {
+                if (s->sdid & (1 << i)) {
+                    target_id = i;
+                    break;
+                }
+            }
+
+            trace_ncr710_selection_start(target_id);
+            qemu_log("NCR710: Selecting SCSI target %d\n", target_id);
+            qemu_log("NCR710: Using SCSI bus: %p\n", &s->bus);
+
+            BusChild *kid;
+            qemu_log("NCR710: Scanning all devices on SCSI bus:\n");
+            qemu_log("NCR710: Bus children queue first: %p\n", QTAILQ_FIRST(&s->bus.qbus.children));
+
+            int device_count = 0;
+            RCU_READ_LOCK_GUARD();
+            QTAILQ_FOREACH_RCU(kid, &s->bus.qbus.children, sibling) {
+                device_count++;
+                SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
+                qemu_log("NCR710: Found device #%d: channel=%d target=%d lun=%d type=%s realized=%s\n",
+                        device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
+                        object_get_typename(OBJECT(scsi_dev)),
+                        qdev_is_realized(&scsi_dev->qdev) ? "yes" : "no");
+            }
+            qemu_log("NCR710: Total devices found: %d\n", device_count);
+
+            SCSIDevice *scsi_dev = scsi_device_find(&s->bus, 0, target_id, 0);
+            if (scsi_dev) {
+                qemu_log("NCR710: Found SCSI device at target %d\n", target_id);
+                s->sstat0 |= SSTAT0_SEL;  /* Selected */
+                s->scntl1 |= SCNTL1_CON;  /* Connected */
+                s->scripts.connected = true;
+                trace_ncr710_connected(true);
+                trace_ncr710_selection_success(target_id);
+            } else {
+                qemu_log("NCR710: No SCSI device found at target %d\n", target_id);
+                s->sstat0 |= SSTAT0_STO;  /* Selection timeout */
+                trace_ncr710_selection_timeout(target_id);
+            }
+        }
+
+        s->scntl0 &= ~SCNTL0_START;
+
         ncr710_update_irq(s);
     }
 }
@@ -1200,6 +1304,8 @@ static void ncr710_arbitrate_bus(NCR710State *s)
 static void ncr710_internal_scsi_bus_reset(NCR710State *s)
 {
     /* Reset SCSI bus and controller state */
+    trace_ncr710_bus_reset();
+    qemu_log("NCR710: Internal SCSI bus reset called\n");
 
     /* Clear SCSI status registers */
     s->sstat0 = 0;
@@ -1222,6 +1328,7 @@ static void ncr710_internal_scsi_bus_reset(NCR710State *s)
     s->scripts.initiator = false;
     s->scripts.running = false;
     s->scripts.phase = SCSI_PHASE_DATA_OUT;
+    trace_ncr710_connected(false);
 
     /* Clear FIFOs */
     ncr710_dma_fifo_flush(&s->dma_fifo);
@@ -1244,20 +1351,50 @@ static void ncr710_device_reset(DeviceState *dev)
     SysBusNCR710State *sysbus_s = SYSBUS_NCR710_SCSI(dev);
     NCR710State *s = &sysbus_s->ncr710;
 
+    trace_ncr710_device_reset();
+    qemu_log("NCR710: Device reset function called\n");
+
+    /* Check devices before any reset */
+    BusChild *kid;
+    int device_count = 0;
+    qemu_log("NCR710: BEFORE NCR710 device reset - devices on bus:\n");
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        device_count++;
+        SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
+        qemu_log("NCR710: Device #%d: channel=%d target=%d lun=%d type=%s\n",
+                device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
+                object_get_typename(OBJECT(scsi_dev)));
+    }
+    qemu_log("NCR710: Total devices BEFORE NCR710 reset: %d\n", device_count);
+
     /* Reset the device state */
     ncr710_internal_scsi_bus_reset(s);
+
+    /* Check devices after reset */
+    device_count = 0;
+    qemu_log("NCR710: AFTER NCR710 device reset - devices on bus:\n");
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        device_count++;
+        SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
+        qemu_log("NCR710: Device #%d: channel=%d target=%d lun=%d type=%s\n",
+                device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
+                object_get_typename(OBJECT(scsi_dev)));
+    }
+    qemu_log("NCR710: Total devices AFTER NCR710 reset: %d\n", device_count);
 }
 
 static void ncr710_scripts_execute(NCR710State *s)
 {
     /* Basic SCRIPTS execution implementation */
     if (!s->scripts.running) {
+        trace_ncr710_scripts_stop(s->dsp, "not running");
         return;
     }
 
     /* Check if we have a valid DSP */
     if (s->dsp == 0) {
         /* Invalid SCRIPTS pointer */
+        trace_ncr710_scripts_illegal_instruction(s->dsp, 0);
         s->dstat |= DSTAT_IID;  /* Illegal Instruction Detected */
         if (s->dien & DIEN_IID) {
             s->istat |= ISTAT_DIP;
@@ -1277,48 +1414,98 @@ static void ncr710_dma_transfer(NCR710State *s)
     if (!s->dbc || !s->dnad) {
         /* No transfer to perform */
         s->dstat |= DSTAT_DFE;  /* DMA FIFO Empty */
+        trace_ncr710_dma_abort("no data to transfer");
         return;
     }
 
+    trace_ncr710_dma_start(s->dnad, s->dbc, s->scripts.phase);
+
     /* For now, just mark DMA as completed */
+    uint32_t transferred = s->dbc;
     s->dbc = 0;  /* Clear byte counter */
     s->dstat |= DSTAT_DFE;  /* Set DMA FIFO Empty */
+
+    trace_ncr710_dma_complete(transferred);
 
     /* Update interrupt status if enabled */
     ncr710_update_irq(s);
 }
 
-/*
- * SCSI bus callback functions
- */
-
+/* SCSI bus callback functions */
 static void ncr710_transfer_data(SCSIRequest *req, uint32_t len)
 {
-    /* NCR710State *s = NCR710_SCSI(req->bus->qbus.parent); */
-    /* TODO: Implement data transfer */
+    trace_ncr710_transfer_data_start(req, len);
+    qemu_log("NCR710: Transfer data request - len=%d, direction=%s\n",
+             len, req->cmd.mode == SCSI_XFER_FROM_DEV ? "READ" : "WRITE");
+
+    /* For now, just complete the transfer immediately */
+    /* In a full implementation, this would trigger DMA operations */
+    if (req->cmd.mode == SCSI_XFER_FROM_DEV) {
+        /* Read operation - provide data to guest */
+        scsi_req_data(req, len);
+    } else {
+        /* Write operation - accept data from guest */
+        scsi_req_data(req, len);
+    }
+
+    trace_ncr710_transfer_data_complete(req, len);
 }
 
 static void ncr710_command_complete(SCSIRequest *req, size_t resid)
 {
-    /* NCR710State *s = NCR710_SCSI(req->bus->qbus.parent); */
-    /* TODO: Handle command completion */
+    SysBusNCR710State *sysbus_s = container_of(req->bus, SysBusNCR710State, ncr710.bus);
+    NCR710State *s = &sysbus_s->ncr710;
+
+    trace_ncr710_command_complete(req, req->status, resid);
+    qemu_log("NCR710: Command complete - status=0x%02x, resid=%zu\n", req->status, resid);
+
+    s->sstat0 |= SSTAT0_FCMP;  /* Function Complete */
+
+    /* Signal interrupt if enabled */
+    if (s->sien & SIEN_FCMP) {
+        s->istat |= ISTAT_SIP;  /* SCSI Interrupt Pending */
+        ncr710_update_irq(s);
+    }
+
+    scsi_req_unref(req);
 }
 
 static void ncr710_request_cancelled(SCSIRequest *req)
 {
-    /* NCR710State *s = NCR710_SCSI(req->bus->qbus.parent); */
-    /* TODO: Handle request cancellation */
+    SysBusNCR710State *sysbus_s = container_of(req->bus, SysBusNCR710State, ncr710.bus);
+    NCR710State *s = &sysbus_s->ncr710;
+
+    trace_ncr710_request_cancelled(req);
+    qemu_log("NCR710: Request cancelled\n");
+
+    /* Set abort status */
+    s->dstat |= DSTAT_ABRT;  /* Aborted */
+
+    /* Signal interrupt if enabled */
+    if (s->dien & DIEN_ABRT) {
+        s->istat |= ISTAT_DIP;  /* DMA Interrupt Pending */
+        ncr710_update_irq(s);
+    }
+
+    scsi_req_unref(req);
 }
 
+
+/* QEMU Object Model Registration
+ * SysBus NCR710 device
+ */
+
 static const struct SCSIBusInfo ncr710_scsi_info = {
-    .tcq = false,  /* NCR710 doesn't support tagged command queuing */
+    .tcq = false,     /* No tagged command queuing */
     .max_target = 8,  /* SCSI targets 0-7 */
-    .max_lun = 8,     /* LUNs 0-7 */
+    .max_lun = 8,     /* LUNs 0-7, buggy? */
 
     .transfer_data = ncr710_transfer_data,
     .complete = ncr710_command_complete,
     .cancel = ncr710_request_cancelled
-};/* Memory region operations */
+};
+
+/* Memory region operations */
 static const MemoryRegionOps ncr710_mmio_ops = {
     .read = ncr710_reg_read,
     .write = ncr710_reg_write,
@@ -1333,16 +1520,14 @@ static const MemoryRegionOps ncr710_mmio_ops = {
     },
 };
 
-/* QEMU Object Model Registration */
-
-/* SysBus NCR710 device */
 static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
 {
     SysBusNCR710State *s = SYSBUS_NCR710_SCSI(dev);
 
+    trace_ncr710_device_realize();
     qemu_log("NCR710: Realize function called\n");
 
-    /* Initialize SCSI bus */
+    /* Initialize SCSI bus with default naming */
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &ncr710_scsi_info);
 
     /* Initialize address space for memory access */
@@ -1359,6 +1544,7 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     s->ncr710.ctest8 = NCR710_REVISION_2;  /* NCR710 chip revision 2 */
     s->ncr710.scid = 0x80 | NCR710_DEFAULT_HOST_ID; /* Valid bit + SCSI ID 7 */
     s->ncr710.dstat = DSTAT_DFE;  /* DMA FIFO Empty initially */
+    qemu_log("NCR710: Initialized DSTAT to 0x%02x\n", s->ncr710.dstat);
 
     /* Initialize critical control registers */
     s->ncr710.dcntl = DCNTL_EA;    /* Enable Ack bit for 710 */
@@ -1402,6 +1588,11 @@ static void sysbus_ncr710_init(Object *obj)
 
     /* Initialize the embedded NCR710 state directly */
     memset(&s->ncr710, 0, sizeof(NCR710State));
+
+    /* Set default register values that identify this as an NCR53C710 */
+    s->ncr710.ctest0 = 0x01;  /* Chip revision 1 */
+    s->ncr710.scid = 0x80 | NCR710_DEFAULT_HOST_ID; /* Valid bit + SCSI ID 7 */
+    s->ncr710.dstat = DSTAT_DFE;  /* DMA FIFO Empty */
 
     qemu_log("NCR710: State initialized\n");
 }

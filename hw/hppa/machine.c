@@ -30,6 +30,7 @@
 #include "hw/pci-host/dino.h"
 #include "hw/misc/lasi.h"
 #include "hw/scsi/ncr53c710.h"
+#include "hw/scsi/lasi_ncr710.h"
 #include "hppa_hardware.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -360,16 +361,21 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
     MemoryRegion *rom_region;
     SysBusDevice *s;
 
-    /* SCSI disk setup with NCR53C710 on LASI */
+    /* SCSI disk setup */
     if (drive_get_max_bus(IF_SCSI) >= 0) {
         if (enable_lasi_scsi()) {
-            dev = ncr53c710_init(addr_space, LASI_SCSI_HPA,
-                qdev_get_gpio_in(lasi_dev, LASI_IRQ_SCSI_HPA));
-            ncr710_handle_legacy_cmdline(dev);
-        } else{
-            dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
-            lsi53c8xx_handle_legacy_cmdline(dev);
-        }
+            dev = lasi_ncr710_init(addr_space, LASI_SCSI_HPA,
+                                  qdev_get_gpio_in(lasi_dev, LASI_IRQ_SCSI_HPA));
+            if (dev) {
+                qemu_log("HPPA Machine: Using LASI NCR710 SCSI controller at LASI_SCSI_HPA\n");
+                lasi_ncr710_handle_legacy_cmdline(dev);
+            } else { /* QEMU log is faster */
+                qemu_log("HPPA Machine: Warning - Failed to create LASI NCR710 controller\n");
+            }
+        } else {
+                dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
+                lsi53c8xx_handle_legacy_cmdline(dev);
+            }
     }
 
     /* Graphics setup. */
