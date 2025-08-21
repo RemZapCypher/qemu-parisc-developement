@@ -312,32 +312,32 @@ static bool i82596_check_medium_status(I82596State *s)
     if (I596_FULL_DUPLEX) {
         return true;
     }
-    
+
     if (!s->throttle_state) {
         DBG(printf("CSMA/CD: Medium busy (throttle off)\n"));
         return false;
     }
-    
+
     if (!I596_LOOPBACK && (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) % 100 < 5)) {
         s->collision_events++;
         DBG(printf("CSMA/CD: Simulated collision detected\n"));
         return false;
     }
-    
+
     return true;
 }
 
 static int i82596_csma_backoff(I82596State *s, int retry_count)
 {
     int backoff_factor, slot_count, backoff_time;
-    
+
     backoff_factor = MIN(retry_count, CSMA_BACKOFF_LIMIT);
     slot_count = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) % (1 << backoff_factor);
     backoff_time = slot_count * CSMA_SLOT_TIME;
-    
-    DBG(printf("CSMA/CD: Backing off for %d microseconds (retry %d)\n", 
+
+    DBG(printf("CSMA/CD: Backing off for %d microseconds (retry %d)\n",
               backoff_time, retry_count));
-    
+
     return backoff_time;
 }
 
@@ -360,24 +360,24 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
         /* Try transmitting with CSMA/CD backoff and retry */
         while (retry_count < CSMA_MAX_RETRIES) {
             medium_available = i82596_check_medium_status(s);
-            
+
             if (medium_available) {
                 break;
             }
-            
+
             /* Medium busy or collision, perform backoff */
             int backoff_time = i82596_csma_backoff(s, retry_count);
-            
+
             /* Wait for the backoff period (simulated) */
             if (backoff_time > 0) {
                 DBG(printf("CSMA/CD: Waiting for %d microseconds\n", backoff_time));
                 /* In real hardware this would be a delay, in emulation we just record it */
             }
-            
+
             retry_count++;
             s->total_collisions++;
         }
-        
+
         /* Check if we exceeded max retries */
         if (retry_count >= CSMA_MAX_RETRIES) {
             DBG(printf("CSMA/CD: Excessive collisions, transmission aborted\n"));
@@ -385,7 +385,7 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
             tx_status |= TX_ABORTED_ERRORS;
             /* Still proceed with simulated transmission but mark it as failed */
         }
-        
+
         /* Record collision count in status */
         if (retry_count > 0) {
             tx_status |= TX_COLLISIONS;
@@ -425,13 +425,11 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
 
             DBG(PRINT_PKTHDR("Send", &s->tx_buffer));
             DBG(printf("Sending %d bytes (crc_inserted=%d)\n", len, insert_crc));
-            
+
             /* Store transmission length for statistics */
             s->last_tx_len = len;
-            
             switch (I596_LOOPBACK) {
             case 0:     /* no loopback, send packet */
-                /* Update TX status with CSMA/CD status */
                 if (tx_status) {
                     set_uint16(tdb_p + 2, tx_status);  /* Write collision status */
                 }
@@ -442,8 +440,6 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
                 break;
             }
         }
-
-        /* was this the last package? */
         if (size & I596_EOF) {
             qemu_flush_queued_packets(qemu_get_queue(s->nic));
             break;
@@ -700,41 +696,41 @@ static void i82596_configure(I82596State *s, uint32_t addr)
 static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
 {
     memset(buffer, 0, DUMP_BUF_SZ);
-    
+
     auto void write_uint16(int offset, uint16_t value) {
         buffer[offset] = value >> 8;
         buffer[offset + 1] = value & 0xFF;
     }
-    
+
     auto void write_uint32(int offset, uint32_t value) {
         write_uint16(offset, value >> 16);
         write_uint16(offset + 2, value & 0xFFFF);
     }
-    
+
     /* ----------------- Configuration Bytes ------------------ */
     /* Configure bytes at offset 0x00 - actual config values */
     write_uint16(0x00, (s->config[5] << 8) | s->config[4]);
     write_uint16(0x02, (s->config[3] << 8) | s->config[2]);
-    
+
     /* Configure bytes at offset 0x04 */
     write_uint16(0x04, (s->config[9] << 8) | s->config[8]);
     write_uint16(0x06, (s->config[7] << 8) | s->config[6]);
-    
+
     /* Configure bytes at offset 0x08 */
     write_uint16(0x08, (s->config[13] << 8) | s->config[12]);
     write_uint16(0x0A, (s->config[11] << 8) | s->config[10]);
-    
+
     /* --------------- Individual Address (MAC) --------------- */
     /* Individual address (MAC) at offset 0x0C - first 2 bytes */
     buffer[0x0C] = s->conf.macaddr.a[0];
     buffer[0x0D] = s->conf.macaddr.a[1];
-    
+
     /* Individual address continued at offset 0x10 - remaining 4 bytes */
     buffer[0x10] = s->conf.macaddr.a[2];
     buffer[0x11] = s->conf.macaddr.a[3];
     buffer[0x12] = s->conf.macaddr.a[4];
     buffer[0x13] = s->conf.macaddr.a[5];
-    
+
     /* --------------- CRC and Status Values ----------------- */
     /* TX CRC bytes and status at offset 0x14 */
     if (s->last_tx_len > 0) {
@@ -742,35 +738,35 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
         write_uint16(0x14, tx_crc & 0xFFFF);
         write_uint16(0x16, tx_crc >> 16);
     }
-    
+
     /* -------------- Hash Table Values --------------------- */
     /* Hash registers at offset 0x24-0x2C - copy multicast hash table */
     memcpy(&buffer[0x24], s->mult, sizeof(s->mult));
-    
+
     /* -------------- Status and Counters ------------------ */
     /* CU and RU status at offset 0xB0 */
     buffer[0xB0] = s->cu_status;
     buffer[0xB1] = s->rx_status;
-    
+
     /* Statistical counters - use tracking variables */
     write_uint32(0xB4, s->crc_err);
     write_uint32(0xB8, s->align_err);
     write_uint32(0xBC, s->resource_err);
     write_uint32(0xC0, s->over_err);
-    
+
     /* -------------- Monitor Mode Counters ---------------- */
     /* Add monitor mode counters at offsets 0xC4-0xCC */
     write_uint32(0xC4, s->short_fr_error);
     write_uint32(0xC8, s->total_frames);
     write_uint32(0xCC, s->total_good_frames);
-    
+
     /* ----------------- Flag Array -------------------------- */
     /* Flag array at offset 0xD0 - real device state */
     buffer[0xD0] = I596_PROMISC ? 1 : 0;          /* Promiscuous mode */
     buffer[0xD1] = I596_BC_DISABLE ? 1 : 0;       /* Broadcast disabled */
     buffer[0xD2] = I596_FULL_DUPLEX ? 1 : 0;      /* Full duplex mode */
     buffer[0xD3] = I596_LOOPBACK;                 /* Loopback setting */
-    
+
     /* Count active multicast addresses */
     uint8_t mc_count = 0;
     for (int i = 0; i < sizeof(s->mult); i++) {
@@ -786,31 +782,31 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
     buffer[0xD4] = mc_count;                      /* Multicast address count */
     buffer[0xD5] = I596_NOCRC_INS ? 1 : 0;        /* No CRC insertion */
     buffer[0xD6] = I596_CRC16_32 ? 1 : 0;         /* CRC16 or CRC32 */
-    
+
     /* ------------- Network and Bus Status ----------------- */
     /* Link status */
     write_uint16(0xD8, s->lnkst);
-    
+
     /* Monitor mode configuration byte */
     buffer[0xDA] = I596_MONITOR_MODE;
-    
+
     /* Store collision events counter in monitor mode */
     write_uint32(0xDC, s->collision_events);
-    
+
     /* ------------- Throttle Timers ----------------------- */
     /* Throttle timers at offset 0x110 */
     write_uint16(0x110, s->t_on);
     write_uint16(0x112, s->t_off);
-    
+
     /* DIU control register at offset 0x114 - bus state */
     write_uint16(0x114, s->throttle_state ? 0x0001 : 0x0000);
-    
+
     /* BIU control register at offset 0x120 - system bus mode */
     write_uint16(0x120, s->sysbus);
-    
+
     /* SCB status word at offset 0x128 */
     write_uint16(0x128, s->scb_status);
-    
+
     /* Signature indicating dump is complete */
     write_uint32(0, 0xFFFF0000);
 }
@@ -1377,7 +1373,7 @@ static void i82596_update_rx_state(I82596State *s, int new_state)
 ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 {
     I82596State *s = qemu_get_nic_opaque(nc);
-    uint32_t rfd_addr_head, rfd_addr, next_rfd, rbd_addr;
+    uint32_t rfa_pointer, rfd_addr_head, rfd_addr, next_rfd, rbd_addr;
     uint16_t status = 0, command, sf_bit;
     uint16_t is_broadcast = 0;
     bool packet_completed = true;
@@ -1400,22 +1396,23 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     }
 
     bool passes_filter = i82596_check_packet_filter(s, buf, &is_broadcast);
-    
+
     if (!i82596_monitor(s, buf, size, passes_filter)) {
         DBG(printf("Packet handled by monitor mode, not processing further\n"));
-        return size; 
+        return size;
     }
-    
+
     /* Only continue normal processing if monitor mode allows it */
     if (!passes_filter) {
         DBG(printf("Packet rejected by filter\n"));
         return size;
     }
 
-    /* Get the head */
-    rfd_addr_head = get_uint32(s->scb + 8);
-    rfd_addr = rfd_addr_head;
-    rfd_addr = i82596_translate_address(s, rfd_addr_head, false);
+    /* Getting the pointers to the correct positions */
+    rfa_pointer = get_uint32(s->scb + 8);
+    rfd_addr = rfa_pointer;
+    rfd_addr_head = rfd_addr;
+    rfd_addr = i82596_translate_address(s, rfd_addr, false);
 
     if (rfd_addr == 0 || rfd_addr == I596_NULL) { /*Check if NULL */
         DBG(printf("No RFD available, setting NO_RESOURCES state\n"));
@@ -1424,19 +1421,27 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     }
 
     command = get_uint16(rfd_addr + 2);
-    sf_bit = !(command & CMD_FLEX);  /* SF bit at bit 3 */
+    sf_bit = !(command & CMD_FLEX);  /* SF bit at 3 bit of ODD word */
 
 
     do{
         next_rfd = get_uint32(rfd_addr + 4);
-        /* Check if RFD is busy */
+
         if (status & STAT_B) {
             return -1;
         }
 
-        uint16_t rfd_size = get_uint16(rfd_addr + 14) & SIZE_MASK;  /* Size field */
-        uint16_t data_offset = 30;  /* Yes, Data starts after header fields */
+        uint16_t rfd_size = get_uint16(rfd_addr + 14);  /* Size field */
 
+        if (rfd_size % 2 != 0) { /* Should always be even */
+            DBG(printf("RFD size is not even, rejecting packet\n"));
+            status |= RX_LENGTH_ERRORS;
+            i82596_record_error(s, RX_LENGTH_ERRORS);
+            return -1;
+        }
+
+
+        uint16_t data_offset = 30;  /* Yes, Data starts after header fields */
         /*
          * Write starts from actual count?
          * Seems to work.
@@ -1507,13 +1512,13 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                                   rbd_addr, buf_addr, buf_size));
 
                         /* Copy data to buffer */
-                        uint16_t to_copy = target_size;
+                        uint16_t to_copy = MIN(target_size, buf_size);
                         address_space_write(&address_space_memory, buf_addr,
                                           MEMTXATTRS_UNSPECIFIED, buf + bytes_copied, to_copy);
                         bytes_copied += to_copy;
                         target_size -= to_copy;
 
-                        uint16_t actual_count = bytes_copied;
+                        uint16_t actual_count = to_copy;
                         if (bytes_copied >= target_size) {
                             actual_count |= I596_EOF;  /* EOF flag */
                         }
@@ -1555,10 +1560,17 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 
                     next_rfd = get_uint32(rfd_addr + 4);
                     next_rfd = i82596_translate_address(s, next_rfd, false);
-                    if (next_rfd != I596_NULL && rbd_addr != I596_NULL) {
-                        rfd_addr = next_rfd;
-                        printf("Moving to next RFD: %08x\n", rfd_addr);
+                    if (next_rfd != I596_NULL && next_rfd != 0) {
+                        if (rbd_addr != I596_NULL) {
+                            DBG(printf("Updating next RFD 0x%08x to point to remaining RBD 0x%08x\n",
+                                   next_rfd, rbd_addr));
+                            set_uint32(next_rfd + 8, rbd_addr);
+                        } else {
+                            DBG(printf("Next RFD 0x%08x has no RBDs left, set NULL\n", next_rfd));
+                            set_uint32(next_rfd + 8, I596_NULL);
+                        }
                     }
+
                 }
             }
         }
@@ -1569,7 +1581,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         crc = cpu_to_be32(crc);
         crc_ptr = (uint8_t *) &crc;
         size += 4;
-        printf("CRC: %08x\n", crc);
+        DBG(printf("CRC: %08x\n", crc));
         if (sf_bit){
             address_space_write(&address_space_memory, rfd_addr + 30 + size - 4,
                                MEMTXATTRS_UNSPECIFIED, crc_ptr, 4);
