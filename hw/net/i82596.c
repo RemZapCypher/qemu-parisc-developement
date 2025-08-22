@@ -37,9 +37,7 @@
 /* ISCP "busy" flag (first byte) */
 #define ISCP_BUSY              0x01
 
-#define I82596_SPEED_MBPS       10
-#define TX_TIMEOUT	            (HZ/20)
-#define I82596_BYTES_PER_SEC    (I82596_SPEED_MBPS * 1000000 / 8)
+#define NANOSECONDS_PER_MICROSECOND 1000
 
 #define SCB_STATUS_CX   0x8000  /* CU finished command with I bit */
 #define SCB_STATUS_FR   0x4000  /* RU finished receiving a frame */
@@ -450,125 +448,88 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
     }
 }
 
+static void i82596_cleanup(I82596State *s)
+{
+    if (s->throttle_timer) {
+        timer_del(s->throttle_timer);
+    }
+    if (s->flush_queue_timer) {
+        timer_del(s->flush_queue_timer);
+    }
+}
+
 /* Bus Throttle Functionality */
 static void i82596_bus_throttle_timer(void *opaque)
 {
     I82596State *s = opaque;
 
-    if (s->cu_status != CU_ACTIVE) {
-        timer_del(s->throttle_timer);
-        return;
-    }
+    DBG(printf("Bus throttle timer fired, current state: %s\n",
+               s->throttle_state ? "ON" : "OFF"));
 
     if (s->throttle_state) {
         /* Currently ON, switch to OFF */
-        DBG(printf("THROTTLE: Switching from ON to OFF (duplex=%s)\n",
-                   I596_FULL_DUPLEX ? "full" : "half"));
         s->throttle_state = false;
+        DBG(printf("Switching bus to OFF state\n"));
 
+        /* Set timer for t_off duration if non-zero */
         if (s->t_off > 0) {
-            /* Add jitter for half duplex to simulate CSMA/CD randomness */
-            int delay = s->t_off;
-            if (!I596_FULL_DUPLEX && s->t_off > 10) {
-                int jitter = s->t_off / 5;
-                int actual_jitter = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) % jitter;
-                delay += actual_jitter;
-                DBG(printf("THROTTLE: Half-duplex jitter added: %d microseconds\n",
-                           actual_jitter));
-            }
-
             timer_mod(s->throttle_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                     delay * 1000);
-            DBG(printf("THROTTLE: OFF for %d microseconds\n", delay));
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->t_off * NANOSECONDS_PER_MICROSECOND);
+            DBG(printf("Scheduled OFF period for %d microseconds\n", s->t_off));
         } else {
+            /* Zero OFF time means immediately go back to ON */
             s->throttle_state = true;
-            DBG(printf("THROTTLE: No OFF time specified, staying ON\n"));
+            DBG(printf("Zero OFF time, immediately switching back to ON\n"));
         }
     } else {
-        DBG(printf("THROTTLE: Switching from OFF to ON (duplex=%s)\n",
-                   I596_FULL_DUPLEX ? "full" : "half"));
+        /* Currently OFF, switch to ON */
         s->throttle_state = true;
+        DBG(printf("Switching bus to ON state\n"));
 
+        /* Set timer for t_on duration if non-zero and not infinite */
         if (s->t_on > 0 && s->t_on != 0xFFFF) {
             timer_mod(s->throttle_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                     s->t_on * 1000);
-            DBG(printf("THROTTLE: ON for %d microseconds\n", s->t_on));
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->t_on * NANOSECONDS_PER_MICROSECOND);
+            DBG(printf("Scheduled ON period for %d microseconds\n", s->t_on));
         } else {
-            DBG(printf("THROTTLE: Staying ON indefinitely (t_on=%d)\n", s->t_on));
+            DBG(printf("Infinite ON time or zero, not scheduling next transition\n"));
         }
     }
 }
 
 static void i82596_load_throttle_timers(I82596State *s, bool start_now)
 {
-    uint32_t t_on_addr, t_off_addr;
+    uint16_t previous_t_on = s->t_on;
+    uint16_t previous_t_off = s->t_off;
 
-    /* Get previous values for comparison */
-    uint16_t prev_t_on = s->t_on;
-    uint16_t prev_t_off = s->t_off;
+    /* Read T-ON and T-OFF values from SCB */
+    s->t_on = get_uint16(s->scb + 36);   /* Offset 16 in SCB for T-ON */
+    s->t_off = get_uint16(s->scb + 38);  /* Offset 18 in SCB for T-OFF */
 
-    /* TODO: Change offset based on the Linear or Segmented mode */
-    t_on_addr = s->scb + 0x1E;
-    t_off_addr = s->scb + 0x20;
+    DBG(printf("Load throttle: T-ON=%d, T-OFF=%d, start=%d\n",
+              s->t_on, s->t_off, start_now));
 
-    /* Read T-ON and T-OFF values */
-    s->t_on = get_uint16(t_on_addr);
-    s->t_off = get_uint16(t_off_addr);
+    /* Check if values changed */
+    bool values_changed = (s->t_on != previous_t_on || s->t_off != previous_t_off);
 
-    if (!I596_FULL_DUPLEX) {
-        /* If t_on is zero or too low, use a reasonable default for half-duplex */
-        if (s->t_on < 500) {
-            /* ~1200μs corresponds to standard 1500 byte packet at 10Mbps */
-            s->t_on = 1200;
-            /* Write back to SCB memory */
-            set_uint16(t_on_addr, s->t_on);
-        }
-
-        /* Ensure t_off is at least 20% of t_on for collision detection */
-        if (s->t_off < (s->t_on / 10)) {
-            s->t_off = s->t_on / 5;  /* 20% off time */
-            set_uint16(t_off_addr, s->t_off);
-        }
-    } else {
-        /* For full-duplex mode, we can have shorter off time */
-        if (s->t_on < 100) {
-            s->t_on = 1000;  /* Still need some throttling for 10Mbps */
-            set_uint16(t_on_addr, s->t_on);
-        }
-    }
-
-    if (prev_t_on != s->t_on || prev_t_off != s->t_off) {
-        DBG(printf("THROTTLE PARAMS: Changed from ON=%d,OFF=%d to ON=%d,OFF=%d\n",
-                   prev_t_on, prev_t_off, s->t_on, s->t_off));
-    }
-
-    DBG(printf("THROTTLE LOAD: T-ON=%d, T-OFF=%d, start=%d, duplex=%s\n",
-               s->t_on, s->t_off, start_now, I596_FULL_DUPLEX ? "full" : "half"));
-
-    if (start_now) {
-        if (!s->throttle_timer) {
-            s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                           i82596_bus_throttle_timer, s);
-            DBG(printf("THROTTLE: Created new timer\n"));
-        } else {
-            timer_del(s->throttle_timer);
-            DBG(printf("THROTTLE: Deleted existing timer\n"));
-        }
+    /* Start the timer if requested or if values changed significantly */
+    if (start_now || (values_changed && s->throttle_timer)) {
+        /* Cancel any pending timer */
+        timer_del(s->throttle_timer);
 
         /* Start with the bus ON */
         s->throttle_state = true;
-        DBG(printf("THROTTLE: Starting with state ON\n"));
 
         /* Schedule the T-ON timer if not infinite */
-        if (s->t_on > 0 && s->t_on != 0xFFFF) {
+        if (s->t_on > 0 && s->t_on != 0xFFFF && !I596_FULL_DUPLEX) {
+            DBG(printf("Starting throttle timer with T-ON=%d microseconds\n", s->t_on));
             timer_mod(s->throttle_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      s->t_on * 1000);
-            DBG(printf("THROTTLE: Scheduled ON timer for %d microseconds\n", s->t_on));
+                      s->t_on * NANOSECONDS_PER_MICROSECOND);
         } else {
-            DBG(printf("THROTTLE: No timer scheduled (t_on=%d)\n", s->t_on));
+            DBG(printf("Not starting throttle timer: infinite T-ON or full duplex\n"));
         }
     }
 }
@@ -576,7 +537,10 @@ static void i82596_load_throttle_timers(I82596State *s, bool start_now)
 static void i82596_s_reset(I82596State *s)
 {
     trace_i82596_s_reset(s);
+    i82596_cleanup(s);
     s->scp = 0x00FFFFF4; /* default SCP pointer */
+    s->scb = 0;          /* Clear SCB pointer */
+    s->scb_base = 0;     /* Clear SCB base */
     s->scb_status = 0;
     s->cu_status = CU_IDLE;
     s->rx_status = RX_IDLE;
@@ -589,7 +553,7 @@ static void i82596_s_reset(I82596State *s)
     memset(s->config, 0, sizeof(s->config));
 
     /* Bus configurations */
-    s->t_on = 0xFFFF; /* T-ON initally */
+    s->t_on = 0xFFFF; /* T-ON initially */
     s->t_off = 0;     /* No idle phase */
     s->throttle_state = true;
 
@@ -597,15 +561,19 @@ static void i82596_s_reset(I82596State *s)
         timer_del(s->throttle_timer);
         s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                        i82596_bus_throttle_timer, s);
+        /* Only start timer in half-duplex mode with non-infinite T-ON */
         if (!I596_FULL_DUPLEX && s->t_on != 0xFFFF) {
             timer_mod(s->throttle_timer,
                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                     s->t_on * 1000);
+                     s->t_on * NANOSECONDS_PER_MICROSECOND);
         }
     }
+
     if (s->flush_queue_timer) {
         timer_del(s->flush_queue_timer);
     }
+
+    /* Set initial IRQ state */
     qemu_set_irq(s->irq, 1);
 }
 
@@ -644,45 +612,6 @@ static void i82596_configure(I82596State *s, uint32_t addr)
     }
 
     /* Configure throttling parameters to enforce 10Mbps speed limit */
-    bool duplex_changed = false;
-    static bool last_duplex_state = false;
-
-    if (byte_cnt > 12) {
-        duplex_changed = ((I596_FULL_DUPLEX) != last_duplex_state);
-        if (duplex_changed) {
-            DBG(printf("DUPLEX: State transition from %s to %s\n",
-                       last_duplex_state ? "FULL" : "HALF",
-                       I596_FULL_DUPLEX ? "FULL" : "HALF"));
-        }
-        last_duplex_state = I596_FULL_DUPLEX;
-    }
-
-    /* Only update throttle parameters if they haven't been set or duplex mode changed */
-    if (s->t_on == 0xFFFF || duplex_changed) {
-        /* Calculate throttling parameters for 10Mbps */
-        uint32_t bytes_per_us = I82596_BYTES_PER_SEC / 1000000;
-        uint16_t packet_time_us;
-
-        /* Standard 1500 byte packet at 10Mbps takes ~1.2ms */
-        packet_time_us = 1500 / bytes_per_us; /* ~1200μs at 10Mbps */
-
-        if (I596_FULL_DUPLEX) {
-            /* Full duplex: less throttling needed */
-            s->t_on = packet_time_us * 5;
-            s->t_off = packet_time_us / 20; /* Very short off time */
-            DBG(printf("THROTTLE CONFIG: Full duplex - ON=%d, OFF=%d microseconds\n",
-                      s->t_on, s->t_off));
-        } else {
-            /* Half duplex: more throttling to simulate collisions and CSMA/CD */
-            s->t_on = packet_time_us;
-            s->t_off = packet_time_us / 5; /* 20% off time */
-            DBG(printf("THROTTLE CONFIG: Half duplex - ON=%d, OFF=%d microseconds\n",
-                      s->t_on, s->t_off));
-        }
-
-        /* Start throttling with new parameters */
-        i82596_load_throttle_timers(s, true);
-    }
 
     if (s->rx_status == RX_READY) {
         timer_mod(s->flush_queue_timer,
@@ -1632,22 +1561,17 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
     size_t sz = 0;
     uint8_t *buf;
     int i;
-
     for (i = 0; i < iovcnt; i++) {
         sz += iov[i].iov_len;
     }
     if (sz == 0) {
         return -1;
     }
-
     buf = g_malloc(sz);
-
     if (!buf) {
         return -1;
     }
-
     size_t offset = 0;
-
     for (i = 0; i < iovcnt; i++) {
         if (iov[i].iov_base == NULL) {
             g_free(buf);
@@ -1656,12 +1580,37 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
         memcpy(buf + offset, iov[i].iov_base, iov[i].iov_len);
         offset += iov[i].iov_len;
     }
-
     PRINT_PKTHDR("Receive IOV:", buf);
-
     i82596_receive(nc, buf, sz);
     g_free(buf);
     return sz;
+}
+
+void i82596_poll(NetClientState *nc, bool enable)
+{
+    I82596State *s = qemu_get_nic_opaque(nc);
+
+    if (!enable) {
+        return;
+    }
+
+    if (s->send_irq) {
+        qemu_set_irq(s->irq, 1);
+    }
+
+    if (s->rx_status == RX_NO_RESOURCES) {
+        /* In a real device, we might try to reclaim resources here
+           For now we just check if we should reset the RU state */
+        if (s->cmd_p != I596_NULL) {
+            s->rx_status = RX_READY;
+            update_scb_status(s);
+        }
+    }
+
+    if (s->cu_status == CU_ACTIVE && s->cmd_p != I596_NULL) {
+        examine_scb(s);
+    }
+    qemu_set_irq(s->irq, 0);
 }
 
 const VMStateDescription vmstate_i82596 = {
@@ -1714,6 +1663,8 @@ void i82596_common_init(DeviceState *dev, I82596State *s, NetClientInfo *info)
     if (USE_TIMER) {
         s->flush_queue_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                     i82596_flush_queue_timer, s);
+        s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    i82596_bus_throttle_timer, s);
     }
 
     s->lnkst = 0x8000; /* initial link state: up */

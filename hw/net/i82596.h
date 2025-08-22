@@ -41,7 +41,15 @@ struct I82596State_st {
     uint16_t lnkst;
     uint32_t last_tx_len;
     uint32_t collision_events;
+    uint32_t total_collisions;
 
+    /* TX retry mechanism fields */
+    uint32_t tx_retry_addr;        /* Address of command being retried */
+    int tx_retry_count;            /* Current retry count for TX */
+    uint32_t tx_good_frames;       /* Successfully transmitted frames */
+    uint32_t tx_collisions;        /* Total collision count */
+    uint32_t tx_aborted_errors;    /* Aborted TX due to excessive collisions */
+    
     uint32_t cmd_p;                 /* addr of current command */
     int ca;
     int ca_active;
@@ -71,6 +79,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size_);
 ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt);
 bool i82596_can_receive(NetClientState *nc);
 void i82596_set_link_status(NetClientState *nc);
+void i82596_poll(NetClientState *nc, bool enable);
 void i82596_common_init(DeviceState *dev, I82596State *s, NetClientInfo *info);
 extern const VMStateDescription vmstate_i82596;
 #endif
