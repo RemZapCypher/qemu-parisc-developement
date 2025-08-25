@@ -43,8 +43,7 @@
 #define SCB_STATUS_FR   0x4000  /* RU finished receiving a frame */
 #define SCB_STATUS_CNA  0x2000  /* CU left active state */
 #define SCB_STATUS_RNR  0x1000  /* RU left active state */
-#define SCB_ACK_MASK \
-        (SCB_STATUS_CX | SCB_STATUS_FR | SCB_STATUS_CNA | SCB_STATUS_RNR)
+#define SCB_ACK_MASK    0xF000  /* All interrupt acknowledge bits */
 
 /* 82596 Operational Modes */
 #define I82586_MODE                 0x00
@@ -302,6 +301,8 @@ static void update_scb_status(I82596State *s)
     s->scb_status = (s->scb_status & 0xf000)
         | (s->cu_status << 8) | (s->rx_status << 4);
     set_uint16(s->scb, s->scb_status);
+
+
 }
 
 static bool i82596_check_medium_status(I82596State *s)
@@ -571,6 +572,9 @@ static void i82596_s_reset(I82596State *s)
     if (s->flush_queue_timer) {
         timer_del(s->flush_queue_timer);
     }
+
+    /* Set initial IRQ state */
+    qemu_set_irq(s->irq, 1);
 }
 
 void i82596_h_reset(void *opaque)
@@ -614,6 +618,8 @@ static void i82596_configure(I82596State *s, uint32_t addr)
             qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
     }
     s->config[13] |= 0x3f; /* set ones in byte 13 */
+    s->scb_status |= SCB_STATUS_CNA;
+    qemu_set_irq(s->irq, 1);
 }
 
 static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
@@ -818,7 +824,6 @@ static void command_loop(I82596State *s)
             break;
         case CmdConfigure:
             i82596_configure(s, s->cmd_p);
-            cmd |= CMD_INTR; /* Always interrupt after configure */
             break;
         case CmdTDR:
             /* get signal LINK */
@@ -1011,24 +1016,33 @@ static void signal_ca(I82596State *s)
     /* trace_i82596_channel_attention(s); */
     s->iscp = 0;
     if (s->scp) {
+        /* CA after reset -> do init with new scp. */
         s->sysbus = get_byte(s->scp + 3); /* big endian */
         s->mode = (s->sysbus >> 1) & 0x03; /* m0 & m1 */
         s->iscp = get_uint32(s->scp + 8);
+
+        /* Get SCB address */
         s->scb = get_uint32(s->iscp + 4);
-        s->scb = i82596_translate_address(s, s->scb, false);
+
+        /* In segmented modes, we need to get the base address as well */
         if (!(s->mode == I82596_MODE_LINEAR)){
-            s->scb_base = s->scb; /* Get SCB base */
+            s->scb_base = get_uint32(s->iscp + 8); /* Get SCB base */
         } else {
             s->scb_base = 0;
         }
-        
-        set_byte(s->iscp + 1, 0);
 
-        s->scb_status |= SCB_STATUS_CNA | SCB_STATUS_RNR;
+        s->scb = i82596_translate_address(s, s->scb, false);
+        DBG(printf("Translated SCB address: 0x%08x\n", s->scb));
+
+        /* Clear BUSY flag in ISCP, set CX and CNR to equal 1 in the SCB, clears the SCB command word,
+         * sends an interrupt to the CPU, and awaits another Channel Attention signal. */
+        set_byte(s->iscp + 1, 0);
+        s->scb_status |= SCB_STATUS_CX | SCB_STATUS_CNA;
+        update_scb_status(s);
         set_uint16(s->scb + 2, 0);
         s->scp = 0;
-        s->send_irq = 1;
-        goto __cont;
+        qemu_set_irq(s->irq, 1);
+        return;
     }
 
     s->ca++;    /* count ca() */
@@ -1041,8 +1055,6 @@ static void signal_ca(I82596State *s)
         s->ca_active = 0;
     }
 
-__cont:
-    update_scb_status(s);
     if (s->send_irq) {
         s->send_irq = 0;
         qemu_set_irq(s->irq, 1);
@@ -1068,7 +1080,8 @@ static void i82596_self_test(I82596State *s, uint32_t val)
 
     s->scb_status &= ~STAT_OK;
     s->scb_status |= STAT_OK;
-    s->send_irq = 1;
+
+    qemu_set_irq(s->irq, 1);
     update_scb_status(s);
 }
 
@@ -1258,6 +1271,14 @@ static bool i82596_monitor(I82596State *s, const uint8_t *buf, size_t sz, bool p
 
         default:
             return true;
+    }
+}
+
+static void i82596_update_scb_irq(I82596State *s, bool send_irq)
+{
+    update_scb_status(s);
+    if (send_irq) {
+        qemu_set_irq(s->irq, 1);
     }
 }
 
@@ -1528,8 +1549,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     /* Generate interrupt if packet was completed successfully */
     if (packet_completed) {
         s->scb_status |= SCB_STATUS_FR;
-        s->send_irq = 1;
-        update_scb_status(s);
+        i82596_update_scb_irq(s, true);
     }
 
     DBG(printf("====== i82596_receive() END ======\n"));
