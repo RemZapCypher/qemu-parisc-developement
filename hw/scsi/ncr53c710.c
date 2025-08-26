@@ -14,7 +14,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/pci/pci_device.h"
 #include "hw/sysbus.h"
 #include "hw/scsi/scsi.h"
 #include "hw/irq.h"
@@ -423,9 +422,10 @@ struct SysBusNCR710State {
     NCR710State ncr710;
 };
 
+
 /* Function prototypes for implemented functions only */
 
-/* Forward declarations for functions called before definition */
+/* Core device functions */
 static void ncr710_update_irq(NCR710State *s);
 static void ncr710_arbitrate_bus(NCR710State *s);
 static void ncr710_internal_scsi_bus_reset(NCR710State *s);
@@ -433,167 +433,42 @@ static void ncr710_device_reset(DeviceState *dev);
 static void ncr710_scripts_execute(NCR710State *s);
 static void ncr710_dma_transfer(NCR710State *s);
 
-/*
- * FIFO Implementation
- */
+/* FIFO management functions */
+static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo);
+static bool ncr710_dma_fifo_empty(NCR710_DMA_FIFO *fifo);
+static bool ncr710_dma_fifo_full(NCR710_DMA_FIFO *fifo);
+static void ncr710_dma_fifo_push(NCR710_DMA_FIFO *fifo, uint8_t data, uint8_t parity);
+static uint8_t ncr710_dma_fifo_pop(NCR710_DMA_FIFO *fifo, uint8_t *parity);
+static void ncr710_dma_fifo_flush(NCR710_DMA_FIFO *fifo);
 
-static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo)
-{
-    trace_ncr710_dma_fifo_init();
-    fifo->head = 0;
-    fifo->tail = 0;
-    fifo->count = 0;
-    memset(fifo->data, 0, sizeof(fifo->data));
-    memset(fifo->parity, 0, sizeof(fifo->parity));
-}
+static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo);
+static bool ncr710_scsi_fifo_empty(NCR710_SCSI_FIFO *fifo);
+static bool ncr710_scsi_fifo_full(NCR710_SCSI_FIFO *fifo);
+static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t parity);
+static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity);
 
-static bool ncr710_dma_fifo_empty(NCR710_DMA_FIFO *fifo)
-{
-    return fifo->count == 0;
-}
+/* Memory access helpers */
+static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr);
+static uint32_t ncr710_calculate_parity(uint8_t data);
 
-static bool ncr710_dma_fifo_full(NCR710_DMA_FIFO *fifo)
-{
-    return fifo->count >= NCR710_DMA_FIFO_SIZE;
-}
+/* Register access functions */
+static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size);
+static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 
-static void ncr710_dma_fifo_push(NCR710_DMA_FIFO *fifo, uint8_t data, uint8_t parity)
-{
-    if (!ncr710_dma_fifo_full(fifo)) {
-        fifo->data[fifo->head] = data;
-        fifo->parity[fifo->head] = parity;
-        fifo->head = (fifo->head + 1) % NCR710_DMA_FIFO_SIZE;
-        fifo->count++;
-        trace_ncr710_dma_fifo_push(data, parity, fifo->count);
-    } else {
-        trace_ncr710_dma_fifo_overflow();
-    }
-}
+/* SCSI bus callback functions */
+static void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
+static void ncr710_command_complete(SCSIRequest *req, size_t resid);
+static void ncr710_request_cancelled(SCSIRequest *req);
 
-static uint8_t ncr710_dma_fifo_pop(NCR710_DMA_FIFO *fifo, uint8_t *parity)
-{
-    uint8_t data = 0;
-    uint8_t parity_val = 0;
-
-    if (!ncr710_dma_fifo_empty(fifo)) {
-        data = fifo->data[fifo->tail];
-        if (parity) {
-            *parity = fifo->parity[fifo->tail];
-            parity_val = *parity;
-        }
-        fifo->tail = (fifo->tail + 1) % NCR710_DMA_FIFO_SIZE;
-        fifo->count--;
-        trace_ncr710_dma_fifo_pop(data, parity_val, fifo->count);
-    } else {
-        trace_ncr710_dma_fifo_underflow();
-    }
-
-    return data;
-}
-
-static void ncr710_dma_fifo_flush(NCR710_DMA_FIFO *fifo)
-{
-    int old_count = fifo->count;
-    ncr710_dma_fifo_init(fifo);
-    trace_ncr710_dma_fifo_flush(old_count);
-}
-
-static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo)
-{
-    trace_ncr710_scsi_fifo_init();
-    fifo->count = 0;
-    memset(fifo->data, 0, sizeof(fifo->data));
-    memset(fifo->parity, 0, sizeof(fifo->parity));
-}
-
-static bool ncr710_scsi_fifo_empty(NCR710_SCSI_FIFO *fifo)
-{
-    return fifo->count == 0;
-}
-
-static bool ncr710_scsi_fifo_full(NCR710_SCSI_FIFO *fifo)
-{
-    return fifo->count >= NCR710_SCSI_FIFO_SIZE;
-}
-
-static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t parity)
-{
-    if (!ncr710_scsi_fifo_full(fifo)) {
-        fifo->data[fifo->count] = data;
-        fifo->parity[fifo->count] = parity;
-        fifo->count++;
-        trace_ncr710_scsi_fifo_push(data, parity, fifo->count);
-    } else {
-        trace_ncr710_scsi_fifo_overflow();
-    }
-}
-
-static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
-{
-    uint8_t data = 0;
-    uint8_t parity_val = 0;
-
-    if (!ncr710_scsi_fifo_empty(fifo)) {
-        data = fifo->data[0];
-        if (parity) {
-            *parity = fifo->parity[0];
-            parity_val = *parity;
-        }
-
-        /* Shift remaining data */
-        for (int i = 0; i < fifo->count - 1; i++) {
-            fifo->data[i] = fifo->data[i + 1];
-            fifo->parity[i] = fifo->parity[i + 1];
-        }
-        fifo->count--;
-        trace_ncr710_scsi_fifo_pop(data, parity_val, fifo->count);
-    } else {
-        trace_ncr710_scsi_fifo_underflow();
-    }
-
-    return data;
-}
-
-/*
- * Memory access helpers
- */
-
-static uint32_t __attribute__((unused)) ncr710_read_memory_32(NCR710State *s, uint32_t addr)
-{
-    uint32_t value = 0;
-
-    if (address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED,
-                          (uint8_t *)&value, 4) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "NCR710: failed to read memory at 0x%08x\n", addr);
-        return 0;
-    }
-
-    /* NCR710 uses little endian for memory accesses regardless of register endianness */
-    value = le32_to_cpu(value);
-    trace_ncr710_read_memory(addr, value);
-    return value;
-}
-
-
-static uint32_t ncr710_calculate_parity(uint8_t data)
-{
-    uint32_t parity = 0;
-
-    /* Count number of 1 bits - odd parity */
-    for (int i = 0; i < 8; i++) {
-        if (data & (1 << i)) {
-            parity++;
-        }
-    }
-
-    return parity & 1;
-}
+/* Device initialization and class functions */
+static void sysbus_ncr710_realize(DeviceState *dev, Error **errp);
+static void sysbus_ncr710_init(Object *obj);
+static void sysbus_ncr710_class_init(ObjectClass *oc, void *data);
+static void ncr710_register_types(void);
 
 /*
  * Register access functions
  */
-
 static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
     NCR710State *s = (NCR710State *)opaque;
@@ -1147,67 +1022,161 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
     }
 }
 
-/* Minimal device creation function for sysbus */
-DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
+/*
+ * FIFO Implementation
+ */
+
+static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo)
 {
-    DeviceState *dev;
-    SysBusDevice *sysbus;
-
-    trace_ncr710_create_sysbus(addr);
-    dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
-    sysbus = SYS_BUS_DEVICE(dev);
-
-    qdev_realize_and_unref(dev, NULL, &error_abort);
-    sysbus_mmio_map(sysbus, 0, addr);
-    sysbus_connect_irq(sysbus, 0, irq);
-
-    return dev;
+    trace_ncr710_dma_fifo_init();
+    fifo->head = 0;
+    fifo->tail = 0;
+    fifo->count = 0;
+    memset(fifo->data, 0, sizeof(fifo->data));
+    memset(fifo->parity, 0, sizeof(fifo->parity));
 }
 
-/* Handle legacy command line SCSI drives */
-void ncr710_handle_legacy_cmdline(DeviceState *ncr_dev)
+static bool ncr710_dma_fifo_empty(NCR710_DMA_FIFO *fifo)
 {
-    SysBusNCR710State *sysbus_s = SYSBUS_NCR710_SCSI(ncr_dev);
-    NCR710State *s = &sysbus_s->ncr710;
+    return fifo->count == 0;
+}
 
-    trace_ncr710_handle_legacy_cmdline();
-    qemu_log("NCR710: Handling legacy command line directly\n");
-    qemu_log("NCR710: Using bus: %p\n", &s->bus);
+static bool ncr710_dma_fifo_full(NCR710_DMA_FIFO *fifo)
+{
+    return fifo->count >= NCR710_DMA_FIFO_SIZE;
+}
 
-    scsi_bus_legacy_handle_cmdline(&s->bus);
-
-    /* Debug: Check what devices are now on the bus */
-    BusChild *kid;
-    int device_count = 0;
-    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
-        device_count++;
-        SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
-        qemu_log("NCR710: Legacy created device #%d: channel=%d target=%d lun=%d type=%s\n",
-                device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
-                object_get_typename(OBJECT(scsi_dev)));
+static void ncr710_dma_fifo_push(NCR710_DMA_FIFO *fifo, uint8_t data, uint8_t parity)
+{
+    if (!ncr710_dma_fifo_full(fifo)) {
+        fifo->data[fifo->head] = data;
+        fifo->parity[fifo->head] = parity;
+        fifo->head = (fifo->head + 1) % NCR710_DMA_FIFO_SIZE;
+        fifo->count++;
+        trace_ncr710_dma_fifo_push(data, parity, fifo->count);
+    } else {
+        trace_ncr710_dma_fifo_overflow();
     }
-    qemu_log("NCR710: Legacy handler created %d devices\n", device_count);
 }
 
-/* Main initialization function expected by HPPA machine */
-DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq)
+static uint8_t ncr710_dma_fifo_pop(NCR710_DMA_FIFO *fifo, uint8_t *parity)
 {
-    DeviceState *dev;
-    SysBusDevice *sysbus;
+    uint8_t data = 0;
+    uint8_t parity_val = 0;
 
-    trace_ncr710_device_init(addr);
-    qemu_log("NCR710: Initializing device at 0x%08lx\n", addr);
+    if (!ncr710_dma_fifo_empty(fifo)) {
+        data = fifo->data[fifo->tail];
+        if (parity) {
+            *parity = fifo->parity[fifo->tail];
+            parity_val = *parity;
+        }
+        fifo->tail = (fifo->tail + 1) % NCR710_DMA_FIFO_SIZE;
+        fifo->count--;
+        trace_ncr710_dma_fifo_pop(data, parity_val, fifo->count);
+    } else {
+        trace_ncr710_dma_fifo_underflow();
+    }
 
-    dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
-    sysbus = SYS_BUS_DEVICE(dev);
+    return data;
+}
 
-    qdev_realize_and_unref(dev, NULL, &error_abort);
-    sysbus_mmio_map(sysbus, 0, addr);
-    sysbus_connect_irq(sysbus, 0, irq);
+static void ncr710_dma_fifo_flush(NCR710_DMA_FIFO *fifo)
+{
+    int old_count = fifo->count;
+    ncr710_dma_fifo_init(fifo);
+    trace_ncr710_dma_fifo_flush(old_count);
+}
 
-    qemu_log("NCR710: Device mapped and IRQ connected\n");
+static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo)
+{
+    trace_ncr710_scsi_fifo_init();
+    fifo->count = 0;
+    memset(fifo->data, 0, sizeof(fifo->data));
+    memset(fifo->parity, 0, sizeof(fifo->parity));
+}
 
-    return dev;
+static bool ncr710_scsi_fifo_empty(NCR710_SCSI_FIFO *fifo)
+{
+    return fifo->count == 0;
+}
+
+static bool ncr710_scsi_fifo_full(NCR710_SCSI_FIFO *fifo)
+{
+    return fifo->count >= NCR710_SCSI_FIFO_SIZE;
+}
+
+static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t parity)
+{
+    if (!ncr710_scsi_fifo_full(fifo)) {
+        fifo->data[fifo->count] = data;
+        fifo->parity[fifo->count] = parity;
+        fifo->count++;
+        trace_ncr710_scsi_fifo_push(data, parity, fifo->count);
+    } else {
+        trace_ncr710_scsi_fifo_overflow();
+    }
+}
+
+static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
+{
+    uint8_t data = 0;
+    uint8_t parity_val = 0;
+
+    if (!ncr710_scsi_fifo_empty(fifo)) {
+        data = fifo->data[0];
+        if (parity) {
+            *parity = fifo->parity[0];
+            parity_val = *parity;
+        }
+
+        /* Shift remaining data */
+        for (int i = 0; i < fifo->count - 1; i++) {
+            fifo->data[i] = fifo->data[i + 1];
+            fifo->parity[i] = fifo->parity[i + 1];
+        }
+        fifo->count--;
+        trace_ncr710_scsi_fifo_pop(data, parity_val, fifo->count);
+    } else {
+        trace_ncr710_scsi_fifo_underflow();
+    }
+
+    return data;
+}
+
+/*
+ * Memory access helpers
+ */
+
+static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
+{
+    uint32_t value = 0;
+
+    if (address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED,
+                          (uint8_t *)&value, 4) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "NCR710: failed to read memory at 0x%08x\n", addr);
+        return 0;
+    }
+
+    /* NCR710 uses little endian for memory accesses regardless of register endianness */
+    value = le32_to_cpu(value);
+    trace_ncr710_read_memory(addr, value);
+    return value;
+}
+
+
+static uint32_t ncr710_calculate_parity(uint8_t data)
+{
+    uint32_t parity = 0;
+
+    /* Count number of 1 bits - odd parity */
+    for (int i = 0; i < 8; i++) {
+        if (data & (1 << i)) {
+            parity++;
+        }
+    }
+
+    return parity & 1;
 }
 
 /* Function implementations */
@@ -1385,6 +1354,11 @@ static void ncr710_device_reset(DeviceState *dev)
 
 static void ncr710_scripts_execute(NCR710State *s)
 {
+    uint32_t instruction;
+    uint32_t address;
+    uint32_t opcode;
+    uint32_t count;
+    
     /* Basic SCRIPTS execution implementation */
     if (!s->scripts.running) {
         trace_ncr710_scripts_stop(s->dsp, "not running");
@@ -1404,8 +1378,131 @@ static void ncr710_scripts_execute(NCR710State *s)
         return;
     }
 
-    /* For now, just stop execution - full SCRIPTS implementation would go here */
-    s->scripts.running = false;
+    /* Fetch SCRIPTS instruction from memory at DSP address */
+    instruction = ncr710_read_memory_32(s, s->dsp);
+    if (instruction == 0) {
+        /* Memory read failed or null instruction */
+        trace_ncr710_scripts_illegal_instruction(s->dsp, instruction);
+        s->dstat |= DSTAT_IID;  /* Illegal Instruction Detected */
+        if (s->dien & DIEN_IID) {
+            s->istat |= ISTAT_DIP;
+        }
+        s->scripts.running = false;
+        ncr710_update_irq(s);
+        return;
+    }
+
+    /* Fetch the second word (address/data) */
+    address = ncr710_read_memory_32(s, s->dsp + 4);
+
+    /* Decode instruction type from bits 31:30 */
+    opcode = instruction & SCRIPTS_TYPE_MASK;
+    count = instruction & SCRIPTS_BM_COUNT_MASK;
+
+    trace_ncr710_scripts_execute(s->dsp, instruction);
+
+    switch (opcode) {
+    case SCRIPTS_TYPE_BLOCK_MOVE:
+        /* Block Move instruction */
+        if (instruction & SCRIPTS_BM_INDIRECT) {
+            /* Indirect addressing - read the actual address from memory */
+            address = ncr710_read_memory_32(s, address);
+        }
+        
+        /* Set up DMA transfer */
+        s->dbc = count;
+        s->dnad = address;
+        s->dcmd = (instruction >> 24) & 0xFF;
+        
+        /* Advance DSP to next instruction */
+        s->dsp += 8;
+        
+        /* Start DMA transfer */
+        ncr710_dma_transfer(s);
+        break;
+
+    case SCRIPTS_TYPE_IO:
+        /* I/O instruction (Select, Reselect, Wait, Set, Clear) */
+        /* For now, just advance to next instruction */
+        s->dsp += 8;
+        trace_ncr710_scripts_io_instruction(instruction, "I/O operation");
+        break;
+
+    case SCRIPTS_TYPE_READ_WRITE:
+        /* Read/Write instruction (not commonly used) */
+        s->dsp += 8;
+        trace_ncr710_scripts_instruction(s->dsp, instruction, "READ/WRITE");
+        break;
+
+    case SCRIPTS_TYPE_TRANSFER:
+        /* Transfer Control instruction (Jump, Call, Return, Interrupt) */
+        {
+            uint32_t tc_opcode = instruction & SCRIPTS_TC_OPCODE_MASK;
+            
+            switch (tc_opcode) {
+            case SCRIPTS_TC_JUMP:
+                /* Unconditional jump */
+                trace_ncr710_scripts_jump(s->dsp, address);
+                s->dsp = address;
+                break;
+                
+            case SCRIPTS_TC_CALL:
+                /* Call subroutine - save return address */
+                trace_ncr710_scripts_call(s->dsp, address);
+                s->temp = s->dsp + 8;
+                s->dsp = address;
+                break;
+                
+            case SCRIPTS_TC_RETURN:
+                /* Return from subroutine */
+                trace_ncr710_scripts_return(s->temp);
+                s->dsp = s->temp;
+                break;
+                
+            case SCRIPTS_TC_INT:
+                /* SCRIPTS interrupt */
+                trace_ncr710_scripts_interrupt(address, address);
+                s->dsps = address;  /* Save interrupt vector */
+                s->dstat |= DSTAT_SIR;  /* SCRIPTS Interrupt */
+                if (s->dien & DIEN_SIR) {
+                    s->istat |= ISTAT_DIP;
+                }
+                s->scripts.running = false;
+                ncr710_update_irq(s);
+                break;
+                
+            default:
+                /* Unknown transfer control instruction */
+                trace_ncr710_scripts_illegal_instruction(s->dsp, instruction);
+                s->dstat |= DSTAT_IID;
+                if (s->dien & DIEN_IID) {
+                    s->istat |= ISTAT_DIP;
+                }
+                s->scripts.running = false;
+                ncr710_update_irq(s);
+                break;
+            }
+        }
+        break;
+
+    default:
+        /* Unknown instruction type */
+        trace_ncr710_scripts_illegal_instruction(s->dsp, instruction);
+        s->dstat |= DSTAT_IID;  /* Illegal Instruction Detected */
+        if (s->dien & DIEN_IID) {
+            s->istat |= ISTAT_DIP;
+        }
+        s->scripts.running = false;
+        ncr710_update_irq(s);
+        break;
+    }
+
+    /* Continue execution if still running */
+    if (s->scripts.running) {
+        /* In a real implementation, we might want to limit the number of 
+         * instructions executed per call to avoid blocking */
+        ncr710_scripts_execute(s);
+    }
 }
 
 static void ncr710_dma_transfer(NCR710State *s)
@@ -1494,6 +1591,69 @@ static void ncr710_request_cancelled(SCSIRequest *req)
 /* QEMU Object Model Registration
  * SysBus NCR710 device
  */
+
+/* Minimal device creation function for sysbus */
+DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
+{
+    DeviceState *dev;
+    SysBusDevice *sysbus;
+
+    trace_ncr710_create_sysbus(addr);
+    dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
+    sysbus = SYS_BUS_DEVICE(dev);
+
+    qdev_realize_and_unref(dev, NULL, &error_abort);
+    sysbus_mmio_map(sysbus, 0, addr);
+    sysbus_connect_irq(sysbus, 0, irq);
+
+    return dev;
+}
+
+/* Handle legacy command line SCSI drives */
+void ncr710_handle_legacy_cmdline(DeviceState *ncr_dev)
+{
+    SysBusNCR710State *sysbus_s = SYSBUS_NCR710_SCSI(ncr_dev);
+    NCR710State *s = &sysbus_s->ncr710;
+
+    trace_ncr710_handle_legacy_cmdline();
+    qemu_log("NCR710: Handling legacy command line directly\n");
+    qemu_log("NCR710: Using bus: %p\n", &s->bus);
+
+    scsi_bus_legacy_handle_cmdline(&s->bus);
+
+    /* Debug: Check what devices are now on the bus */
+    BusChild *kid;
+    int device_count = 0;
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        device_count++;
+        SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
+        qemu_log("NCR710: Legacy created device #%d: channel=%d target=%d lun=%d type=%s\n",
+                device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
+                object_get_typename(OBJECT(scsi_dev)));
+    }
+    qemu_log("NCR710: Legacy handler created %d devices\n", device_count);
+}
+
+/* Main initialization function expected by HPPA machine */
+DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq)
+{
+    DeviceState *dev;
+    SysBusDevice *sysbus;
+
+    trace_ncr710_device_init(addr);
+    qemu_log("NCR710: Initializing device at 0x%08lx\n", addr);
+
+    dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
+    sysbus = SYS_BUS_DEVICE(dev);
+
+    qdev_realize_and_unref(dev, NULL, &error_abort);
+    sysbus_mmio_map(sysbus, 0, addr);
+    sysbus_connect_irq(sysbus, 0, irq);
+
+    qemu_log("NCR710: Device mapped and IRQ connected\n");
+
+    return dev;
+}
 
 static const struct SCSIBusInfo ncr710_scsi_info = {
     .tcq = false,     /* No tagged command queuing */
