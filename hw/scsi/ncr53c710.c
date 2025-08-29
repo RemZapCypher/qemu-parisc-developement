@@ -27,8 +27,9 @@
 #include "qapi/error.h"
 #include "hw/scsi/ncr53c710.h"
 
-/* NCR53C710 Register Offsets (from Table 4.1 Register Address Map) */
-/* Big Endian addressing - access size is 8-bit for all registers */
+/* Big Endian addressing - access size is 8-bit for all registers
+ * NCR53C710 Register Offsets (from Table 4.1 Register Address Map)
+ */
 #define NCR710_SCNTL0_REG       0x00    /* SCSI Control Zero */
 #define NCR710_SCNTL1_REG       0x01    /* SCSI Control One */
 #define NCR710_SDID_REG         0x02    /* SCSI Destination ID */
@@ -281,7 +282,6 @@
 
 /* Host adapter defaults (from Linux driver) */
 #define NCR710_DEFAULT_HOST_ID  7       /* Default SCSI ID */
-#define NCR710_DEFAULT_IRQ      MVME16x_IRQ_SCSI
 
 /* Extended CTEST7 bits (from driver) */
 #define CTEST7_TT1              0x02    /* Transfer Type 1 */
@@ -424,8 +424,7 @@ struct SysBusNCR710State {
 
 
 /* Function prototypes for implemented functions only */
-
-/* Core device functions */
+/* 1. Core device functions */
 static void ncr710_update_irq(NCR710State *s);
 static void ncr710_arbitrate_bus(NCR710State *s);
 static void ncr710_internal_scsi_bus_reset(NCR710State *s);
@@ -433,7 +432,7 @@ static void ncr710_device_reset(DeviceState *dev);
 static void ncr710_scripts_execute(NCR710State *s);
 static void ncr710_dma_transfer(NCR710State *s);
 
-/* FIFO management functions */
+/* 2. FIFO management functions */
 static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo);
 static bool ncr710_dma_fifo_empty(NCR710_DMA_FIFO *fifo);
 static bool ncr710_dma_fifo_full(NCR710_DMA_FIFO *fifo);
@@ -447,27 +446,26 @@ static bool ncr710_scsi_fifo_full(NCR710_SCSI_FIFO *fifo);
 static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t parity);
 static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity);
 
-/* Memory access helpers */
+/* 3. Memory access helpers */
 static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr);
 static uint32_t ncr710_calculate_parity(uint8_t data);
 
-/* Register access functions */
+/* 4. Register access functions */
 static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size);
 static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 
-/* SCSI bus callback functions */
+/* 5. SCSI bus callback functions */
 static void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
 static void ncr710_command_complete(SCSIRequest *req, size_t resid);
 static void ncr710_request_cancelled(SCSIRequest *req);
 
-/* Device initialization and class functions */
+/* 6. Device initialization and class functions */
 static void sysbus_ncr710_realize(DeviceState *dev, Error **errp);
 static void sysbus_ncr710_init(Object *obj);
 static void sysbus_ncr710_class_init(ObjectClass *oc, void *data);
 static void ncr710_register_types(void);
 
-/*
- * Register access functions
+/* Register access functions
  */
 static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -491,12 +489,9 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_SCID_REG:
         ret = s->scid;
-        /* Ensure valid bit is always set for reads, but preserve written value */
         if ((ret & 0x7F) == 0) {
-            /* If no ID is set, return default ID 7 with valid bit */
             ret = 0x80 | NCR710_DEFAULT_HOST_ID;
         } else {
-            /* Return written value with valid bit set */
             ret |= 0x80;
         }
         break;
@@ -514,7 +509,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_SIDL_REG:
         ret = s->sidl;
-        /* Reading SIDL clears ILF bit in SSTAT1 */
         s->sstat1 &= ~SSTAT1_ILF;
         break;
     case NCR710_SBDL_REG:
@@ -525,7 +519,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_DSTAT_REG:
         ret = s->dstat;
-        /* Reading DSTAT clears DMA interrupt status but preserves status flags */
         if (s->dstat & (DSTAT_SSI | DSTAT_SIR | DSTAT_WTD | DSTAT_IID)) {
             s->dstat &= ~(DSTAT_SSI | DSTAT_SIR | DSTAT_WTD | DSTAT_IID);
             s->istat &= ~ISTAT_DIP;
@@ -534,7 +527,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_SSTAT0_REG:
         ret = s->sstat0;
-        /* Reading SSTAT0 clears SCSI interrupt status if any */
         if (s->sstat0 != 0) {
             s->sstat0 = 0;
             s->istat &= ~ISTAT_SIP;
@@ -548,7 +540,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         ret = s->sstat2;
         break;
 
-    /* 32-bit registers - Little Endian access */
     case NCR710_DSA_REG:
         ret = s->dsa & 0xFF;
         break;
@@ -570,20 +561,17 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_CTEST2_REG:
         ret = s->ctest2;
-        /* Update FIFO flags */
         if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-            s->ctest2 |= 0x04; /* DFE - DMA FIFO Empty */
+            s->ctest2 |= 0x04;
         } else {
             s->ctest2 &= ~0x04;
         }
         break;
     case NCR710_CTEST3_REG:
         ret = s->ctest3;
-        /* Reading CTEST3 pops a byte from SCSI FIFO */
         if (!ncr710_scsi_fifo_empty(&s->scsi_fifo)) {
             uint8_t parity;
             ret = ncr710_scsi_fifo_pop(&s->scsi_fifo, &parity);
-            /* Update parity bit in CTEST2 */
             if (parity) {
                 s->ctest2 |= 0x10;
             } else {
@@ -599,11 +587,9 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_CTEST6_REG:
         ret = s->ctest6;
-        /* Reading CTEST6 pops a byte from DMA FIFO */
         if (!ncr710_dma_fifo_empty(&s->dma_fifo)) {
             uint8_t parity;
             ret = ncr710_dma_fifo_pop(&s->dma_fifo, &parity);
-            /* Update parity bit in CTEST2 */
             if (parity) {
                 s->ctest2 |= 0x08;
             } else {
@@ -630,7 +616,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
 
     case NCR710_DFIFO_REG:
         ret = s->dfifo;
-        /* Update DFIFO register based on current FIFO state */
         s->dfifo = s->dma_fifo.count & 0x7F;
         if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
             s->dfifo |= 0x80; /* Set DFE bit */
@@ -641,7 +626,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case NCR710_CTEST8_REG:
         ret = s->ctest8;
-        /* Return chip revision that firmware expects for NCR710 */
         if (ret == 0) {
             ret = 0x02; /* NCR710 revision 2 */
         }
@@ -650,7 +634,6 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
         ret = s->lcrc;
         break;
 
-    /* DMA Byte Counter - 24-bit, Little Endian */
     case NCR710_DBC_REG:
         ret = s->dbc & 0xFF;
         break;
@@ -758,16 +741,13 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
     NCR710State *s = (NCR710State *)opaque;
     uint8_t old_val;
 
-    /* Debug: log all register writes */
     qemu_log("NCR710: WRITE addr=0x%02x val=0x%02x size=%d\n", (int)addr, (int)val, size);
-
     trace_ncr710_reg_write(addr, val);
 
     switch (addr) {
     case NCR710_SCNTL0_REG:
         s->scntl0 = val;
         if (val & SCNTL0_START) {
-            /* Start arbitration sequence */
             ncr710_arbitrate_bus(s);
         }
         break;
@@ -775,7 +755,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         old_val = s->scntl1;
         s->scntl1 = val;
         if ((val & SCNTL1_RST) && !(old_val & SCNTL1_RST)) {
-            /* SCSI bus reset asserted */
             ncr710_internal_scsi_bus_reset(s);
         }
         break;
@@ -794,19 +773,16 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         break;
     case NCR710_SODL_REG:
         s->sodl = val;
-        /* Set OLF bit in SSTAT1 when data is written to SODL */
         s->sstat1 |= SSTAT1_OLF;
         break;
     case NCR710_SOCL_REG:
         s->socl = val;
-        /* Update SCSI bus control lines based on SOCL */
         s->sbcl = val;
         break;
     case NCR710_SFBR_REG:
         s->sfbr = val;
         break;
 
-    /* 32-bit registers - Little Endian access */
     case NCR710_DSA_REG:
         s->dsa = (s->dsa & 0xFFFFFF00) | (val & 0xFF);
         break;
@@ -822,7 +798,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
 
     case NCR710_CTEST0_REG:
         s->ctest0 = val;
-        /* Check if TolerANT active negation is enabled */
         if (val & 0x01) { /* EAN bit */
             s->tolerant_enabled = true;
         } else {
@@ -837,7 +812,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         break;
     case NCR710_CTEST3_REG:
         s->ctest3 = val;
-        /* Writing to CTEST3 pushes a byte to SCSI FIFO */
         if (!ncr710_scsi_fifo_full(&s->scsi_fifo)) {
             uint8_t parity = ncr710_calculate_parity(val);
             ncr710_scsi_fifo_push(&s->scsi_fifo, val, parity);
@@ -845,14 +819,12 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         break;
     case NCR710_CTEST4_REG:
         s->ctest4 = val;
-        /* FIFO byte lane select and other test functions */
         break;
     case NCR710_CTEST5_REG:
         s->ctest5 = val;
         break;
     case NCR710_CTEST6_REG:
         s->ctest6 = val;
-        /* Writing to CTEST6 pushes a byte to DMA FIFO */
         if (!ncr710_dma_fifo_full(&s->dma_fifo)) {
             uint8_t parity = (s->ctest7 & 0x08) ? 1 : 0; /* DFP bit */
             ncr710_dma_fifo_push(&s->dma_fifo, val, parity);
@@ -860,7 +832,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         break;
     case NCR710_CTEST7_REG:
         s->ctest7 = val;
-        /* Cache burst control, differential mode, etc. */
         if (val & 0x01) { /* DIFF bit */
             s->differential_mode = true;
         } else {
@@ -884,33 +855,26 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
 
     case NCR710_ISTAT_REG:
         if (val & ISTAT_ABRT) {
-            /* Abort current operation */
             s->scripts.running = false;
             s->dstat |= DSTAT_ABRT;
             s->istat |= ISTAT_DIP;
-            /* Stop timers */
             timer_del(s->selection_timer);
             timer_del(s->watchdog_timer);
             ncr710_update_irq(s);
         }
         if (val & ISTAT_RST) {
-            /* Software reset - reset most registers but preserve some */
             uint8_t saved_ctest8 = s->ctest8;
             memset(s, 0, sizeof(NCR710State));
             s->ctest8 = saved_ctest8;  /* Preserve chip revision */
-            /* Restore DSTAT to DMA FIFO Empty after reset */
             s->dstat = DSTAT_DFE;
             ncr710_dma_fifo_init(&s->dma_fifo);
             ncr710_scsi_fifo_init(&s->scsi_fifo);
         }
-        /* Update writable bits */
         s->istat = (s->istat & 0x0F) | (val & 0xF0);
         break;
 
     case NCR710_CTEST8_REG:
-        /* CTEST8 is mostly read-only (chip revision), but some bits are writable */
         s->ctest8 = (s->ctest8 & 0xF0) | (val & 0x0F);
-        /* Check for FIFO flush */
         if (val & 0x04) { /* FLF bit */
             ncr710_dma_fifo_flush(&s->dma_fifo);
         }
@@ -919,7 +883,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         s->lcrc = val;
         break;
 
-    /* DMA Byte Counter - 24-bit, Little Endian */
     case NCR710_DBC_REG:
         s->dbc = (s->dbc & 0xFFFF00) | (val & 0xFF);
         break;
@@ -957,7 +920,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
         break;
     case NCR710_DSP_REG + 3:
         s->dsp = (s->dsp & 0x00FFFFFF) | ((val & 0xFF) << 24);
-        /* Writing to upper byte of DSP starts SCRIPTS execution */
         s->scripts.running = true;
         s->scripts.pc = s->dsp;
         ncr710_scripts_execute(s);
@@ -991,7 +953,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
 
     case NCR710_DMODE_REG:
         s->dmode = val;
-        /* Extract burst length */
         switch (val & DMODE_BL_MASK) {
         case 0x00: s->burst_length = 1; break;
         case 0x40: s->burst_length = 2; break;
@@ -1009,7 +970,6 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
     case NCR710_DCNTL_REG:
         s->dcntl = val;
         if (val & DCNTL_STD) {
-            /* Start DMA operation */
             ncr710_dma_transfer(s);
         }
         break;
@@ -1022,10 +982,8 @@ static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned s
     }
 }
 
-/*
- * FIFO Implementation
+/* FIFO Implementation (DMA and SCSI)
  */
-
 static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo)
 {
     trace_ncr710_dma_fifo_init();
@@ -1143,10 +1101,8 @@ static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
     return data;
 }
 
-/*
- * Memory access helpers
- */
 
+/* Memory access helpers */
 static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
 {
     uint32_t value = 0;
@@ -1158,7 +1114,6 @@ static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
         return 0;
     }
 
-    /* NCR710 uses little endian for memory accesses regardless of register endianness */
     value = le32_to_cpu(value);
     trace_ncr710_read_memory(addr, value);
     return value;
@@ -1168,8 +1123,6 @@ static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
 static uint32_t ncr710_calculate_parity(uint8_t data)
 {
     uint32_t parity = 0;
-
-    /* Count number of 1 bits - odd parity */
     for (int i = 0; i < 8; i++) {
         if (data & (1 << i)) {
             parity++;
@@ -1179,12 +1132,10 @@ static uint32_t ncr710_calculate_parity(uint8_t data)
     return parity & 1;
 }
 
-/* Function implementations */
 static void ncr710_update_irq(NCR710State *s)
 {
     bool irq_active = false;
 
-    /* Check if any interrupt conditions are active */
     if (s->istat & (ISTAT_SIP | ISTAT_DIP)) {
         irq_active = true;
         trace_ncr710_irq_raise(s->sstat0, s->dstat);
@@ -1192,7 +1143,6 @@ static void ncr710_update_irq(NCR710State *s)
         trace_ncr710_irq_lower();
     }
 
-    /* Update the IRQ line */
     if (s->irq) {
         qemu_set_irq(s->irq, irq_active ? 1 : 0);
     }
@@ -1272,46 +1222,29 @@ static void ncr710_arbitrate_bus(NCR710State *s)
 
 static void ncr710_internal_scsi_bus_reset(NCR710State *s)
 {
-    /* Reset SCSI bus and controller state */
     trace_ncr710_bus_reset();
     qemu_log("NCR710: Internal SCSI bus reset called\n");
 
-    /* Clear SCSI status registers */
     s->sstat0 = 0;
     s->sstat1 = 0;
     s->sstat2 = 0;
-
-    /* Clear DMA status */
     s->dstat = DSTAT_DFE;  /* DMA FIFO Empty */
-
-    /* Reset SCSI control registers */
     s->scntl0 &= ~(SCNTL0_START | SCNTL0_WATN);
     s->scntl1 &= ~(SCNTL1_CON | SCNTL1_RST);
-
-    /* Clear SCSI output control */
     s->socl = 0;
     s->sbcl = 0;
-
-    /* Reset SCRIPTS context */
     s->scripts.connected = false;
     s->scripts.initiator = false;
     s->scripts.running = false;
     s->scripts.phase = SCSI_PHASE_DATA_OUT;
     trace_ncr710_connected(false);
-
-    /* Clear FIFOs */
     ncr710_dma_fifo_flush(&s->dma_fifo);
     ncr710_scsi_fifo_init(&s->scsi_fifo);
-
-    /* Reset interrupt status */
     s->istat &= ~(ISTAT_SIP | ISTAT_DIP | ISTAT_CON);
-
-    /* Set RST received flag */
     s->sstat0 |= SSTAT0_RST;
     if (s->sien & SIEN_RST) {
         s->istat |= ISTAT_SIP;
     }
-
     ncr710_update_irq(s);
 }
 
@@ -1323,7 +1256,6 @@ static void ncr710_device_reset(DeviceState *dev)
     trace_ncr710_device_reset();
     qemu_log("NCR710: Device reset function called\n");
 
-    /* Check devices before any reset */
     BusChild *kid;
     int device_count = 0;
     qemu_log("NCR710: BEFORE NCR710 device reset - devices on bus:\n");
@@ -1336,10 +1268,8 @@ static void ncr710_device_reset(DeviceState *dev)
     }
     qemu_log("NCR710: Total devices BEFORE NCR710 reset: %d\n", device_count);
 
-    /* Reset the device state */
     ncr710_internal_scsi_bus_reset(s);
 
-    /* Check devices after reset */
     device_count = 0;
     qemu_log("NCR710: AFTER NCR710 device reset - devices on bus:\n");
     QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
@@ -1358,16 +1288,13 @@ static void ncr710_scripts_execute(NCR710State *s)
     uint32_t address;
     uint32_t opcode;
     uint32_t count;
-    
-    /* Basic SCRIPTS execution implementation */
+
     if (!s->scripts.running) {
         trace_ncr710_scripts_stop(s->dsp, "not running");
         return;
     }
 
-    /* Check if we have a valid DSP */
     if (s->dsp == 0) {
-        /* Invalid SCRIPTS pointer */
         trace_ncr710_scripts_illegal_instruction(s->dsp, 0);
         s->dstat |= DSTAT_IID;  /* Illegal Instruction Detected */
         if (s->dien & DIEN_IID) {
@@ -1378,10 +1305,8 @@ static void ncr710_scripts_execute(NCR710State *s)
         return;
     }
 
-    /* Fetch SCRIPTS instruction from memory at DSP address */
     instruction = ncr710_read_memory_32(s, s->dsp);
     if (instruction == 0) {
-        /* Memory read failed or null instruction */
         trace_ncr710_scripts_illegal_instruction(s->dsp, instruction);
         s->dstat |= DSTAT_IID;  /* Illegal Instruction Detected */
         if (s->dien & DIEN_IID) {
@@ -1392,10 +1317,8 @@ static void ncr710_scripts_execute(NCR710State *s)
         return;
     }
 
-    /* Fetch the second word (address/data) */
     address = ncr710_read_memory_32(s, s->dsp + 4);
 
-    /* Decode instruction type from bits 31:30 */
     opcode = instruction & SCRIPTS_TYPE_MASK;
     count = instruction & SCRIPTS_BM_COUNT_MASK;
 
@@ -1403,20 +1326,17 @@ static void ncr710_scripts_execute(NCR710State *s)
 
     switch (opcode) {
     case SCRIPTS_TYPE_BLOCK_MOVE:
-        /* Block Move instruction */
         if (instruction & SCRIPTS_BM_INDIRECT) {
-            /* Indirect addressing - read the actual address from memory */
             address = ncr710_read_memory_32(s, address);
         }
-        
-        /* Set up DMA transfer */
+
         s->dbc = count;
         s->dnad = address;
         s->dcmd = (instruction >> 24) & 0xFF;
-        
+
         /* Advance DSP to next instruction */
         s->dsp += 8;
-        
+
         /* Start DMA transfer */
         ncr710_dma_transfer(s);
         break;
@@ -1438,27 +1358,27 @@ static void ncr710_scripts_execute(NCR710State *s)
         /* Transfer Control instruction (Jump, Call, Return, Interrupt) */
         {
             uint32_t tc_opcode = instruction & SCRIPTS_TC_OPCODE_MASK;
-            
+
             switch (tc_opcode) {
             case SCRIPTS_TC_JUMP:
                 /* Unconditional jump */
                 trace_ncr710_scripts_jump(s->dsp, address);
                 s->dsp = address;
                 break;
-                
+
             case SCRIPTS_TC_CALL:
                 /* Call subroutine - save return address */
                 trace_ncr710_scripts_call(s->dsp, address);
                 s->temp = s->dsp + 8;
                 s->dsp = address;
                 break;
-                
+
             case SCRIPTS_TC_RETURN:
                 /* Return from subroutine */
                 trace_ncr710_scripts_return(s->temp);
                 s->dsp = s->temp;
                 break;
-                
+
             case SCRIPTS_TC_INT:
                 /* SCRIPTS interrupt */
                 trace_ncr710_scripts_interrupt(address, address);
@@ -1470,7 +1390,7 @@ static void ncr710_scripts_execute(NCR710State *s)
                 s->scripts.running = false;
                 ncr710_update_irq(s);
                 break;
-                
+
             default:
                 /* Unknown transfer control instruction */
                 trace_ncr710_scripts_illegal_instruction(s->dsp, instruction);
@@ -1499,7 +1419,7 @@ static void ncr710_scripts_execute(NCR710State *s)
 
     /* Continue execution if still running */
     if (s->scripts.running) {
-        /* In a real implementation, we might want to limit the number of 
+        /* In a real implementation, we might want to limit the number of
          * instructions executed per call to avoid blocking */
         ncr710_scripts_execute(s);
     }
@@ -1587,6 +1507,18 @@ static void ncr710_request_cancelled(SCSIRequest *req)
     scsi_req_unref(req);
 }
 
+static void ncr710_drained_begin(SCSIBus *bus)
+{
+    /* Stop submitting new requests during drain */
+    trace_ncr710_drained_begin();
+}
+
+static void ncr710_drained_end(SCSIBus *bus)
+{
+    /* Resume normal operation after drain */
+    trace_ncr710_drained_end();
+}
+
 
 /* QEMU Object Model Registration
  * SysBus NCR710 device
@@ -1662,7 +1594,9 @@ static const struct SCSIBusInfo ncr710_scsi_info = {
 
     .transfer_data = ncr710_transfer_data,
     .complete = ncr710_command_complete,
-    .cancel = ncr710_request_cancelled
+    .cancel = ncr710_request_cancelled,
+    .drained_begin = ncr710_drained_begin,
+    .drained_end = ncr710_drained_end,
 };
 
 /* Memory region operations */
@@ -1740,6 +1674,26 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     qemu_log("NCR710: Device realized with memory region and IRQ\n");
 }
 
+static void sysbus_ncr710_unrealize(DeviceState *dev)
+{
+    SysBusNCR710State *s = SYSBUS_NCR710_SCSI(dev);
+
+    trace_ncr710_device_unrealize();
+    qemu_log("NCR710: Device unrealize called\n");
+
+    /* Clean up timers */
+    if (s->ncr710.selection_timer) {
+        timer_free(s->ncr710.selection_timer);
+        s->ncr710.selection_timer = NULL;
+    }
+    if (s->ncr710.watchdog_timer) {
+        timer_free(s->ncr710.watchdog_timer);
+        s->ncr710.watchdog_timer = NULL;
+    }
+
+    qemu_log("NCR710: Device unrealize completed\n");
+}
+
 static void sysbus_ncr710_init(Object *obj)
 {
     SysBusNCR710State *s = SYSBUS_NCR710_SCSI(obj);
@@ -1762,6 +1716,7 @@ static void sysbus_ncr710_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = sysbus_ncr710_realize;
+    dc->unrealize = sysbus_ncr710_unrealize;
     dc->desc = "NCR53C710 SCSI I/O Processor (SysBus)";
     device_class_set_legacy_reset(dc, ncr710_device_reset);
     dc->bus_type = NULL;  /* Explicitly set to NULL for sysbus devices */
