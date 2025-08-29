@@ -454,12 +454,16 @@ static uint32_t ncr710_calculate_parity(uint8_t data);
 static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size);
 static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 
-/* 5. SCSI bus callback functions */
+/* 5. SCSI command initiation */
+/* TODO: integrate with SCRIPTS processor */
+/* static void ncr710_scsi_command_start(NCR710State *s, uint8_t target, uint8_t lun, uint8_t *cdb, uint32_t cdb_len); */
+
+/* 6. SCSI bus callback functions */
 static void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
 static void ncr710_command_complete(SCSIRequest *req, size_t resid);
 static void ncr710_request_cancelled(SCSIRequest *req);
 
-/* 6. Device initialization and class functions */
+/* 7. Device initialization and class functions */
 static void sysbus_ncr710_realize(DeviceState *dev, Error **errp);
 static void sysbus_ncr710_init(Object *obj);
 static void sysbus_ncr710_class_init(ObjectClass *oc, void *data);
@@ -1107,6 +1111,13 @@ static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
 {
     uint32_t value = 0;
 
+    /* Check if address space is initialized */
+    if (!s->as) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "NCR710: address space not initialized, using fallback\n");
+        s->as = &address_space_memory;
+    }
+
     if (address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED,
                           (uint8_t *)&value, 4) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1448,6 +1459,45 @@ static void ncr710_dma_transfer(NCR710State *s)
     ncr710_update_irq(s);
 }
 
+/* SCSI command initiation - TODO: integrate with SCRIPTS processor */
+#if 0
+static void ncr710_scsi_command_start(NCR710State *s, uint8_t target, uint8_t lun, uint8_t *cdb, uint32_t cdb_len)
+{
+    SCSIDevice *d;
+    SCSIRequest *req;
+
+    qemu_log("NCR710: Starting SCSI command - target=%d, lun=%d, opcode=0x%02x\n", 
+             target, lun, cdb[0]);
+
+    /* Find the SCSI device */
+    d = scsi_device_find(&s->bus, 0, target, lun);
+    if (!d) {
+        qemu_log("NCR710: No device found at target %d, lun %d\n", target, lun);
+        /* Set selection timeout */
+        s->sstat0 |= SSTAT0_STO;  /* Selection Timeout */
+        if (s->sien & SIEN_STO) {
+            s->istat |= ISTAT_SIP;
+        }
+        ncr710_update_irq(s);
+        return;
+    }
+
+    /* Create and start the SCSI request */
+    req = scsi_req_new(d, 0, lun, cdb, cdb_len, s);
+    if (!req) {
+        qemu_log("NCR710: Failed to create SCSI request\n");
+        return;
+    }
+
+    s->current_req = req;
+    s->scripts.connected = true;
+    
+    /* Start the command */
+    scsi_req_enqueue(req);
+    qemu_log("NCR710: SCSI command enqueued successfully\n");
+}
+#endif
+
 /* SCSI bus callback functions */
 static void ncr710_transfer_data(SCSIRequest *req, uint32_t len)
 {
@@ -1571,6 +1621,7 @@ DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq i
 {
     DeviceState *dev;
     SysBusDevice *sysbus;
+    SysBusNCR710State *s;
 
     trace_ncr710_device_init(addr);
     qemu_log("NCR710: Initializing device at 0x%08lx\n", addr);
@@ -1581,6 +1632,13 @@ DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq i
     qdev_realize_and_unref(dev, NULL, &error_abort);
     sysbus_mmio_map(sysbus, 0, addr);
     sysbus_connect_irq(sysbus, 0, irq);
+
+    /* Ensure address space is initialized for legacy path */
+    s = SYSBUS_NCR710_SCSI(dev);
+    if (!s->ncr710.as) {
+        s->ncr710.as = &address_space_memory;
+        qemu_log("NCR710: Address space initialized in legacy init\n");
+    }
 
     qemu_log("NCR710: Device mapped and IRQ connected\n");
 
