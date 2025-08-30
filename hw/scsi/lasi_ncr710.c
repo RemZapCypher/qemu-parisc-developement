@@ -85,21 +85,18 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
         return val;
     }
 
-    /* Also implement hversion register at offset 0x08 */
     if (addr == 0x08) {
         val = s->hversion;
         qemu_log(" -> HVersion = 0x%02x\n", (int)val);
         return val;
     }
 
-    /* Implement status register at 0x0C indicating device is present and functional */
     if (addr == 0x0C) {
         val = 0x53434E52;  /* 'SCNR' - identify as SCSI NCR device */
         qemu_log(" -> SCSI Identification = 0x%08x\n", (int)val);
         return val;
     }
 
-    /* Forward ALL other accesses to NCR710 (including SCID at offset 0x04) */
     /* Forward ALL other accesses to NCR710 (including SCID at offset 0x04) */
     if (s->ncr710_dev) {
         MemoryRegion *ncr710_mem = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ncr710_dev), 0);
@@ -146,7 +143,6 @@ static const VMStateDescription vmstate_lasi_ncr710 = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        /* For now, no state to save - NCR710 device handles its own state */
         VMSTATE_END_OF_LIST()
     }
 };
@@ -158,7 +154,6 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
 
     qemu_log("LASI NCR710: Realizing device\n");
 
-    /* Set PA-RISC device identification */
     s->hw_type = HPHW_FIO;
     s->sversion = LASI_710_SVERSION;
     s->hversion = 0x3d;
@@ -166,7 +161,6 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     qemu_log("LASI NCR710: Device ID - hw_type=%d (HPHW_FIO), sversion=0x%04x, hversion=0x%02x\n",
              s->hw_type, s->sversion, s->hversion);
 
-    /* Initialize memory region for LASI SCSI interface */
     memory_region_init_io(&s->mmio, OBJECT(s), &lasi_ncr710_mem_ops, s,
                          "lasi-ncr710", 0x100);  /* Only 0x100 bytes for LASI registers */
 
@@ -186,13 +180,11 @@ DeviceState *lasi_ncr710_init(MemoryRegion *addr_space, hwaddr hpa, qemu_irq irq
 
     qemu_log("LASI NCR710: Initializing at HPA 0x%08x\n", (uint32_t)hpa);
 
-    /* Create and realize the LASI NCR710 device first */
     dev = qdev_new(TYPE_LASI_NCR710);
     s = LASI_NCR710(dev);
     s->irq = irq;
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 
-    /* Create NCR710 device independently on the system bus */
     ncr710_dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
     ncr710_sysbus = SYS_BUS_DEVICE(ncr710_dev);
 
@@ -275,12 +267,6 @@ static void lasi_ncr710_reset(DeviceState *dev)
             qemu_log("LASI NCR710: No SCSI bus found\n");
         }
 
-        /* DON'T call device_cold_reset - it destroys SCSI devices!
-         * Instead, just reset the controller registers without affecting the bus
-         */
-        qemu_log("LASI NCR710: Skipping device_cold_reset to preserve SCSI devices\n");
-
-        /* Check devices AFTER avoiding the reset */
         child_count = 0;
         if (bus) {
             qemu_log("LASI NCR710: AFTER avoiding reset - checking SCSI bus: %p\n", bus);
@@ -291,9 +277,6 @@ static void lasi_ncr710_reset(DeviceState *dev)
             }
             qemu_log("LASI NCR710: Found SCSI bus with %d children AFTER avoiding reset\n", child_count);
         }
-
-        /* Note: The NCR710 device will handle its own register reset
-         * when SeaBIOS writes to the control registers */
     }
 }
 
