@@ -1,11 +1,15 @@
 /*
- * NCR710 SCSI I/O Processor
+ * LASI NCR710 SCSI I/O Processor
  *
  * Copyright (c) 2025 Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
  *
  * NCR710 SCSI I/O Processor implementation
  * Based on the NCR53C710 Technical Manual Version 3.2, December 2000
  *
+ * Developed from the hackish implementation of NCR53C710 by Helge Deller
+ * which was interm based on the hackish implementation by Toni Wilen for UAE
+ * God, the linux kernel side is buggy for NCR710.
+ * But workarounds work (probably, fingers crossed).
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -252,7 +256,6 @@
 #define SCRIPTS_TC_RETURN       0x10000000  /* Return */
 #define SCRIPTS_TC_INT          0x18000000  /* Interrupt */
 
-/* SCSI phases - use naming consistent with reference material */
 #define PHASE_DO          0
 #define PHASE_DI          1
 #define PHASE_CMD         2
@@ -337,160 +340,6 @@
 /* Extended DMODE bits (from driver) */
 #define DMODE_FC2               0x02    /* Flow Control 2 */
 
-/* DMA FIFO structure - 64 bytes x 9 bits (4 byte lanes of 16 entries each) */
-typedef struct {
-    uint8_t data[NCR710_DMA_FIFO_SIZE];
-    uint8_t parity[NCR710_DMA_FIFO_SIZE];
-    int head;       /* Write pointer */
-    int tail;       /* Read pointer */
-    int count;      /* Number of valid entries */
-} NCR710_DMA_FIFO;
-
-/* SCSI FIFO structure - 8 bytes */
-typedef struct {
-    uint8_t data[NCR710_SCSI_FIFO_SIZE];
-    uint8_t parity[NCR710_SCSI_FIFO_SIZE];
-    int count;      /* Number of valid bytes */
-} NCR710_SCSI_FIFO;
-
-/* Type aliases for compatibility */
-typedef NCR710_DMA_FIFO NCR710_DMA_FIFO;
-typedef NCR710_SCSI_FIFO NCR710_SCSI_FIFO;
-
-/* Request structure for SCSI command tracking */
-typedef struct NCR710Request {
-    SCSIRequest *req;
-    uint32_t tag;
-    uint32_t dma_len;
-    uint8_t *dma_buf;
-    uint32_t pending;
-    int out;
-    QTAILQ_ENTRY(NCR710Request) next;
-} NCR710Request;
-
-/* SCRIPTS execution context */
-typedef struct {
-    bool running;
-    uint32_t pc;        /* Current program counter (DSP) */
-    uint32_t saved_pc;  /* Saved PC for calls (TEMP) */
-    uint8_t phase;      /* Current SCSI phase */
-    bool connected;     /* Connected to SCSI bus */
-    bool initiator;     /* True if initiator, false if target */
-} NCR710_SCRIPTS_Context;
-
-/* Device state structure definitions */
-struct NCR710State {
-    DeviceState parent_obj;
-
-    /* Memory regions */
-    MemoryRegion mmio;
-    MemoryRegion ram;
-
-    /* SCSI bus */
-    SCSIBus bus;
-
-    /* SCSI Core Registers (0x00-0x0F) */
-    uint8_t scntl0;             /* 0x00 SCSI Control Zero */
-    uint8_t scntl1;             /* 0x01 SCSI Control One */
-    uint8_t sdid;               /* 0x02 SCSI Destination ID */
-    uint8_t sien;               /* 0x03 SCSI Interrupt Enable */
-    uint8_t scid;               /* 0x04 SCSI Chip ID */
-    uint8_t sxfer;              /* 0x05 SCSI Transfer */
-    uint8_t sodl;               /* 0x06 SCSI Output Data Latch */
-    uint8_t socl;               /* 0x07 SCSI Output Control Latch */
-    uint8_t sfbr;               /* 0x08 SCSI First Byte Received */
-    uint8_t sidl;               /* 0x09 SCSI Input Data Latch */
-    uint8_t sbdl;               /* 0x0A SCSI Bus Data Lines */
-    uint8_t sbcl;               /* 0x0B SCSI Bus Control Lines */
-
-    /* DMA Core and Status Registers (0x10-0x13) */
-    uint8_t dstat;              /* 0x14 DMA Status */
-    uint8_t sstat0;             /* 0x15 SCSI Status 0 */
-    uint8_t sstat1;             /* 0x16 SCSI Status 1 */
-    uint8_t sstat2;             /* 0x17 SCSI Status 2 */
-
-    /* DMA Registers (0x18-0x3F) */
-    uint32_t dsa;               /* 0x10 Data Structure Address */
-    uint8_t istat;              /* 0x14 Interrupt Status */
-    uint32_t dbc;               /* 0x18 DMA Byte Counter */
-    uint8_t dcmd;               /* 0x1B DMA Command */
-    uint32_t dnad;              /* 0x1C DMA Next Address for Data */
-    uint32_t dsp;               /* 0x20 DMA SCRIPTS Pointer */
-    uint32_t dsps;              /* 0x24 DMA SCRIPTS Pointer Save */
-    uint32_t scratch;           /* 0x28-0x2B Scratch Registers A-D */
-    uint8_t dmode;              /* 0x38 DMA Mode */
-    uint8_t dien;               /* 0x39 DMA Interrupt Enable */
-    uint8_t dwt;                /* 0x3A DMA Watchdog Timer */
-    uint8_t dcntl;              /* 0x3B DMA Control */
-    uint32_t adder;             /* 0x3C Adder Sum Output */
-
-    /* Additional test registers */
-    uint8_t ctest0, ctest1, ctest2, ctest3, ctest4, ctest5, ctest6, ctest7;
-    uint8_t dfifo;              /* DMA FIFO */
-    uint8_t ctest8;             /* Chip Test 8 */
-    uint8_t lcrc;               /* Longitudinal Parity */
-    uint32_t temp;              /* Temporary register */
-    uint32_t sbc;               /* SCSI Byte Count - for compatibility */
-
-    /* Internal FIFOs */
-    NCR710_DMA_FIFO dma_fifo;
-    NCR710_SCSI_FIFO scsi_fifo;
-
-    /* SCRIPTS execution context */
-    NCR710_SCRIPTS_Context scripts;
-
-    /* SCSI command management */
-    QTAILQ_HEAD(, NCR710Request) queue;
-    NCR710Request *current;
-    uint32_t select_tag;
-    int current_lun;
-    int command_complete;
-    int waiting;            /* 0=not waiting, 1=wait reselect, 2=DMA processing, 3=DMA in progress */
-    int carry;              /* Carry flag for SCRIPTS arithmetic */
-    int status;             /* Last command status */
-    int msg_action;         /* Action after MSG IN phase */
-    int msg_len;            /* Current message length */
-    uint8_t msg[8];         /* Message buffer */
-
-    /* Current SCSI operation state */
-    SCSIRequest *current_req;
-    uint8_t *current_dma_buf;
-    uint32_t current_dma_len;
-    uint8_t current_scsi_phase;
-    bool selection_timeout_enabled;
-    uint8_t script_active;
-
-    /* Timers */
-    QEMUTimer *selection_timer;
-    QEMUTimer *watchdog_timer;
-
-    /* IRQ line */
-    qemu_irq irq;
-
-    /* Host memory access */
-    AddressSpace *as;
-
-    /* Bus mode and endianness */
-    bool big_endian;
-    bool bus_mode_2;    /* true = 68040 mode, false = 68030 mode */
-
-    /* Chip features */
-    bool tolerant_enabled;  /* LSI Logic TolerANT Active Negation */
-    bool differential_mode;
-    bool cache_line_burst;
-    uint8_t burst_length;   /* 1, 2, 4, 8 longwords */
-};
-
-/* SysBus device wrapper for NCR710 */
-struct SysBusNCR710State {
-    /*< private >*/
-    SysBusDevice parent_obj;
-    /*< public >*/
-
-    MemoryRegion iomem;
-    uint32_t it_shift;
-    NCR710State ncr710;
-};
 
 
 /* Function prototypes for implemented functions only */
@@ -567,12 +416,26 @@ static void sysbus_ncr710_init(Object *obj);
 static void sysbus_ncr710_class_init(ObjectClass *oc, void *data);
 static void ncr710_register_types(void);
 
-/* Core helper functions adapted from reference material */
-
+// Diff TODO: investigate reselection interrupt handling difference
 static inline int ncr710_irq_on_rsl(NCR710State *s)
 {
-    // Diff TODO: investigate reselection interrupt handling difference
-    return 0; /* For now, disable reselection interrupts */
+    return 0; //return (s->sien0 & LSI_SIST0_RSL) && (s->scid & LSI_SCID_RRE);
+}
+
+bool ncr710_is_700_mode(NCR710State *s)
+{
+    return s->compatibility_mode;
+}
+
+static void ncr710_update_compatibility_mode(NCR710State *s)
+{
+    bool old_mode = s->compatibility_mode;
+    s->compatibility_mode = (s->dcntl & DCNTL_COM) != 0;
+    
+    if (old_mode != s->compatibility_mode) {
+        qemu_log("NCR710: Switching to %s compatibility mode\n", 
+                 s->compatibility_mode ? "53C700" : "53C710");
+    }
 }
 
 static void ncr710_soft_reset(NCR710State *s)
@@ -643,6 +506,7 @@ static void ncr710_soft_reset(NCR710State *s)
     s->scripts.pc = 0;
     s->scripts.saved_pc = 0;
     s->script_active = 0;
+    s->compatibility_mode = false;  /* Start in 710 mode by default */
 
     /* Reset FIFOs */
     ncr710_dma_fifo_init(&s->dma_fifo);
@@ -1309,6 +1173,7 @@ static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count
 
 static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
 {
+    bool is_700_mode = ncr710_is_700_mode(s);
     uint8_t tmp;
 
 #define CASE_GET_REG24(name, addr) \
@@ -1326,7 +1191,12 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
     case NCR710_SCNTL0_REG: /* SCNTL0 */
         return s->scntl0;
     case NCR710_SCNTL1_REG: /* SCNTL1 */
-        return s->scntl1;
+        tmp = s->scntl1;
+        if (is_700_mode) {
+            /* In 700 mode: bits 1,0 are Start SCSI Send/Receive (removed in 710) */
+            /* These don't exist in 710, so mask them out in 710 mode */
+        }
+        return tmp;
     case NCR710_SDID_REG: /* SDID */
         return s->sdid;
     case NCR710_SIEN_REG: /* SIEN */
@@ -1342,17 +1212,13 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
     case NCR710_SFBR_REG: /* SFBR */
         return s->sfbr;
     case NCR710_SIDL_REG: /* SIDL */
-        /* This is needed by the linux drivers. We currently only update it
-           during the MSG IN phase. */
         return s->sidl;
     case NCR710_SBDL_REG: /* SBDL */
         return s->sbdl;
     case NCR710_SBCL_REG: /* SBCL */
         tmp = 0;
         if (s->scntl1 & SCNTL1_CON) {
-            /* NetBSD 1.x checks for REQ */
             tmp = s->sstat2 & PHASE_MASK;
-            /* if phase mismatch, REQ is also active */
             tmp |= s->sbcl;
             if (s->socl & SOCL_ATN)
                 tmp |= SBCL_ATN;
@@ -1360,6 +1226,10 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
         return tmp;
     case NCR710_DSTAT_REG: /* DSTAT */
         tmp = s->dstat | DSTAT_DFE;
+        if (is_700_mode) {
+            /* In 700 mode: bit 5 (Bus fault) doesn't exist */
+            tmp &= ~0x20;  /* Mask out bus fault bit */
+        }
         s->dstat = 0;
         ncr710_update_irq(s);
         return tmp;
@@ -1373,6 +1243,11 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
     case NCR710_SSTAT2_REG: /* SSTAT2 */
         return s->sstat2;
     CASE_GET_REG32(dsa, NCR710_DSA_REG)
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA read in 700 compatibility mode\n");
+            return 0;
+        }
+        break;
     case NCR710_CTEST0_REG: /* CTEST0 */
         return s->ctest0;
     case NCR710_CTEST1_REG: /* CTEST1 */
@@ -1382,26 +1257,74 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
         if (s->istat & ISTAT_SIGP) {
             s->istat &= ~ISTAT_SIGP;
             tmp |= 0x40; /* SIGP */
+            if (is_700_mode) {
+                /* In 700 mode: SIGP test & reset bit doesn't exist */
+                tmp &= ~0x40;
+            }
         }
         return tmp;
     case NCR710_CTEST3_REG: /* CTEST3 */
         return s->ctest3;
     case NCR710_CTEST4_REG: /* CTEST4 */
-        return s->ctest4;
+        tmp = s->ctest4;
+        if (is_700_mode) {
+            /* In 700 mode: bit 7 (Mux mode) doesn't exist */
+            tmp &= ~0x80;
+        }
+        return tmp;
     case NCR710_CTEST5_REG: /* CTEST5 */
         return s->ctest5;
     case NCR710_CTEST6_REG: /* CTEST6 */
         return s->ctest6;
     case NCR710_CTEST7_REG: /* CTEST7 */
-        return s->ctest7;
+        if (is_700_mode) {
+            /* In 700 mode: bits 7-4 are chip revision, bit 1 is DCI pin control */
+            tmp = (s->ctest7 & 0x0F) | (NCR710_REVISION_2 << 4);
+            /* DCI pin control is at bit 1 in 700 mode */
+            if (s->ctest7 & 0x02) {
+                tmp |= 0x02;
+            }
+        } else {
+            /* In 710 mode: new bits available */
+            tmp = s->ctest7;
+        }
+        return tmp;
     CASE_GET_REG32(temp, NCR710_TEMP_REG)
     case NCR710_DFIFO_REG: /* DFIFO */
-        return 0;
+        if (is_700_mode) {
+            /* In 700 mode: bit 7 is flush FIFO, bit 6 is clear FIFO */
+            tmp = 0; /* FIFO count */
+            /* Map 710 CTEST8 bits back to 700 DFIFO layout */
+            if (s->ctest8 & 0x08) tmp |= 0x80;  /* Flush FIFO bit */
+            if (s->ctest8 & 0x04) tmp |= 0x40;  /* Clear FIFO bit */
+            return tmp;
+        } else {
+            /* In 710 mode: bit 6 is new byte offset six */
+            return 0;
+        }
     case NCR710_ISTAT_REG: /* ISTAT */
-        return s->istat;
+        tmp = s->istat;
+        if (is_700_mode) {
+            /* In 700 mode: bit 2 is DSPS and DSP empty bit, bit 5 (SIGP) doesn't exist */
+            if (s->dsp == 0 && s->dsps == 0) {
+                tmp |= 0x04;  /* Set DSP/DSPS empty bit */
+            }
+            tmp &= ~ISTAT_SIGP;  /* SIGP doesn't exist in 700 */
+            /* Software reset is at DCNTL bit 0 in 700 mode, not ISTAT bit 6 */
+            tmp &= ~ISTAT_RST;
+        }
+        return tmp;
     case NCR710_CTEST8_REG: /* CTEST8 */
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 read in 700 compatibility mode\n");
+            return 0;
+        }
         return (s->ctest8 | (NCR710_REVISION_2 << 4)) & ~0x04; // clear CLF
     case NCR710_LCRC_REG: /* LCRC */
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC read in 700 compatibility mode\n");
+            return 0;
+        }
         return s->lcrc;
     CASE_GET_REG24(dbc, NCR710_DBC_REG)
     case NCR710_DCMD_REG: /* DCMD */
@@ -1410,15 +1333,45 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
     CASE_GET_REG32(dsp, NCR710_DSP_REG)
     CASE_GET_REG32(dsps, NCR710_DSPS_REG)
     CASE_GET_REG32(scratch, NCR710_SCRATCH_REG)
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH read in 700 compatibility mode\n");
+            return 0;
+        }
+        break;
     case NCR710_DMODE_REG: /* DMODE */
-        return s->dmode;
+        tmp = s->dmode;
+        if (is_700_mode) {
+            /* In 700 mode: different bit meanings */
+            /* Bits 5-4: 16-bit DMA '286-mode bits (700 only) */
+            /* Bit 3: I/O-memory mapped DMA bit (700 only) */
+            /* Bit 1: Pipeline mode bit (700 only) */
+            /* Clear 710-specific function code bits */
+            tmp &= ~0x38; /* Clear bits 5-3 which have different meanings in 710 */
+        }
+        return tmp;
     case NCR710_DIEN_REG: /* DIEN */
-        return s->dien;
+        tmp = s->dien;
+        if (is_700_mode) {
+            /* In 700 mode: bit 5 (Bus fault interrupt enable) doesn't exist */
+            tmp &= ~0x20;
+        }
+        return tmp;
     case NCR710_DWT_REG: /* DWT */
         return s->dwt;
     case NCR710_DCNTL_REG: /* DCNTL */
-        return s->dcntl;
+        tmp = s->dcntl;
+        if (is_700_mode) {
+            /* In 700 mode: mask out 710-specific bits */
+            tmp &= ~(DCNTL_EA | DCNTL_COM);  /* These don't exist in 700 */
+            /* Software reset is bit 0 in 700 mode */
+        }
+        return tmp;
     CASE_GET_REG32(adder, NCR710_ADDER_REG)
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER read in 700 compatibility mode\n");
+            return 0;
+        }
+        break;
     }
 #undef CASE_GET_REG24
 #undef CASE_GET_REG32
@@ -1428,6 +1381,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
 
 static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 {
+    bool is_700_mode = ncr710_is_700_mode(s);
 #define CASE_SET_REG24(name, addr) \
     case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
     case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
@@ -1522,21 +1476,31 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
     case NCR710_DFIFO_REG: /* DFIFO, read-only */
         break;
     case NCR710_ISTAT_REG: /* ISTAT */
-        s->istat = (s->istat & 0x0f) | (val & 0xf0);
-        if (val & ISTAT_ABRT) {
-            ncr710_script_dma_interrupt(s, DSTAT_ABRT);
-        }
-        if (s->waiting == 1 && (val & ISTAT_SIGP)) {
-            NCR710_DPRINTF("Woken by SIGP\n");
-            s->waiting = 0;
-            s->dsp = s->dnad;
-            ncr710_scripts_execute(s);
-        }
-        if (val & ISTAT_RST) {
-            ncr710_soft_reset(s);
+        if (is_700_mode) {
+            /* In 700 mode: no SIGP bit, no RST bit */
+            s->istat = (s->istat & 0x0f) | (val & 0xDF); /* Mask out SIGP and RST */
+        } else {
+            /* Normal 710 mode */
+            s->istat = (s->istat & 0x0f) | (val & 0xf0);
+            if (val & ISTAT_ABRT) {
+                ncr710_script_dma_interrupt(s, DSTAT_ABRT);
+            }
+            if (s->waiting == 1 && (val & ISTAT_SIGP)) {
+                NCR710_DPRINTF("Woken by SIGP\n");
+                s->waiting = 0;
+                s->dsp = s->dnad;
+                ncr710_scripts_execute(s);
+            }
+            if (val & ISTAT_RST) {
+                ncr710_soft_reset(s);
+            }
         }
         break;
     case NCR710_CTEST8_REG: /* CTEST8 */
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 write in 700 compatibility mode\n");
+            return;
+        }
         s->ctest8 = val;
         break;
     case NCR710_LCRC_REG: /* LCRC */
@@ -1584,9 +1548,22 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         s->dwt = val;
         break;
     case NCR710_DCNTL_REG: /* DCNTL */
-        s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD);
-        if ((val & DCNTL_STD) && (s->dmode & DMODE_MAN) != 0)
-            ncr710_scripts_execute(s);
+        if (is_700_mode) {
+            /* In 700 mode: different bit layout */
+            s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD | DCNTL_EA);
+            /* Handle software reset bit (bit 0 in 700 mode) */
+            if (val & 0x01) {
+                ncr710_soft_reset(s);
+            }
+            /* 16-bit SCSI scripts mode is bit 5 in 700 */
+        } else {
+            /* Normal 710 mode */
+            s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD);
+            if ((val & DCNTL_STD) && (s->dmode & DMODE_MAN) != 0) {
+                ncr710_scripts_execute(s);
+            }
+        }
+        ncr710_update_compatibility_mode(s);
         break;
     CASE_SET_REG32(adder, NCR710_ADDER_REG)
     default:
@@ -2370,23 +2347,6 @@ static void ncr710_arbitrate_bus(NCR710State *s)
 
             trace_ncr710_selection_start(target_id);
             qemu_log("NCR710: Selecting SCSI target %d\n", target_id);
-            qemu_log("NCR710: Using SCSI bus: %p\n", &s->bus);
-
-            BusChild *kid;
-            qemu_log("NCR710: Scanning all devices on SCSI bus:\n");
-            qemu_log("NCR710: Bus children queue first: %p\n", QTAILQ_FIRST(&s->bus.qbus.children));
-
-            int device_count = 0;
-            RCU_READ_LOCK_GUARD();
-            QTAILQ_FOREACH_RCU(kid, &s->bus.qbus.children, sibling) {
-                device_count++;
-                SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
-                qemu_log("NCR710: Found device #%d: channel=%d target=%d lun=%d type=%s realized=%s\n",
-                        device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
-                        object_get_typename(OBJECT(scsi_dev)),
-                        qdev_is_realized(&scsi_dev->qdev) ? "yes" : "no");
-            }
-            qemu_log("NCR710: Total devices found: %d\n", device_count);
 
             SCSIDevice *scsi_dev = scsi_device_find(&s->bus, 0, target_id, 0);
             if (scsi_dev) {
@@ -2394,6 +2354,15 @@ static void ncr710_arbitrate_bus(NCR710State *s)
                 s->sstat0 |= SSTAT0_SEL;  /* Selected */
                 s->scntl1 |= SCNTL1_CON;  /* Connected */
                 s->scripts.connected = true;
+
+                if (s->socl & SOCL_ATN) {
+                    ncr710_set_phase(s, PHASE_MO);
+                    s->sstat2 = (s->sstat2 & ~PHASE_MASK) | PHASE_MO;
+                } else {
+                    ncr710_set_phase(s, PHASE_CMD);
+                    s->sstat2 = (s->sstat2 & ~PHASE_MASK) | PHASE_CMD;
+                }
+
                 trace_ncr710_connected(true);
                 trace_ncr710_selection_success(target_id);
             } else {
@@ -2404,7 +2373,6 @@ static void ncr710_arbitrate_bus(NCR710State *s)
         }
 
         s->scntl0 &= ~SCNTL0_START;
-
         ncr710_update_irq(s);
     }
 }
@@ -2416,55 +2384,36 @@ static void ncr710_internal_scsi_bus_reset(NCR710State *s)
     trace_ncr710_bus_reset();
     qemu_log("NCR710: Internal SCSI bus reset called\n");
 
-    /* Cancel all active and queued requests */
     QTAILQ_FOREACH_SAFE(req, &s->queue, next, next_req) {
         NCR710_DPRINTF("Cancelling queued request tag=0x%x\n", req->tag);
         scsi_req_cancel(req->req);
-        /* ncr710_request_free will be called by the cancel callback */
     }
-
-    /* Cancel current request if any */
     if (s->current) {
         NCR710_DPRINTF("Cancelling current request tag=0x%x\n", s->current->tag);
         scsi_req_cancel(s->current->req);
         s->current = NULL;
     }
-
-    /* Reset SCSI status registers */
     s->sstat0 = SSTAT0_RST;  /* Set RST bit to indicate reset occurred */
     s->sstat1 = 0;
     s->sstat2 = 0;
     s->dstat = DSTAT_DFE;  /* DMA FIFO Empty */
-
-    /* Clear control registers */
     s->scntl0 &= ~(SCNTL0_START | SCNTL0_WATN);
     s->scntl1 &= ~(SCNTL1_CON | SCNTL1_RST);
     s->socl = 0;
     s->sbcl = 0;
-
-    /* Reset SCRIPTS execution state */
     s->scripts.connected = false;
     s->scripts.initiator = false;
     s->scripts.running = false;
     s->scripts.phase = SCSI_PHASE_DATA_OUT;
     s->script_active = 0;
-
-    /* Clear connection state */
     trace_ncr710_connected(false);
-
-    /* Reset FIFOs */
     ncr710_dma_fifo_flush(&s->dma_fifo);
     ncr710_scsi_fifo_init(&s->scsi_fifo);
-
-    /* Clear interrupt flags and set RST interrupt if enabled */
     s->istat &= ~(ISTAT_SIP | ISTAT_DIP | ISTAT_CON);
     if (s->sien & SIEN_RST) {
         s->istat |= ISTAT_SIP;
     }
-
-    /* Perform actual SCSI bus reset */
     bus_cold_reset(BUS(&s->bus));
-
     ncr710_update_irq(s);
     qemu_log("NCR710: SCSI bus reset completed\n");
 }
@@ -2514,10 +2463,7 @@ again:
 
     insn = ncr710_read_memory_32(s, s->dsp);
 
-    /* Check for invalid or problematic opcodes */
     if (!insn) {
-        /* If we receive an empty opcode increment the DSP by 4 bytes
-           instead of 8 and execute the next opcode at that location */
         qemu_log("NCR710: Empty opcode at DSP=0x%08x\n", s->dsp);
         printf("=== NCR710: Empty opcode at DSP=0x%08x ===\n", s->dsp);
 
@@ -3091,7 +3037,6 @@ static void ncr710_command_complete(SCSIRequest *req, size_t resid)
     s->status = req->status;
     s->command_complete = 2;
     if (s->waiting && s->dbc != 0) {
-        /* Raise phase mismatch for short transfers */
         ncr710_bad_phase(s, out, PHASE_ST);
     } else {
         ncr710_set_phase(s, PHASE_ST);
@@ -3182,32 +3127,6 @@ DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
     return dev;
 }
 
-/* Handle legacy command line SCSI drives */
-void ncr710_handle_legacy_cmdline(DeviceState *ncr_dev)
-{
-    SysBusNCR710State *sysbus_s = SYSBUS_NCR710_SCSI(ncr_dev);
-    NCR710State *s = &sysbus_s->ncr710;
-
-    trace_ncr710_handle_legacy_cmdline();
-    qemu_log("NCR710: Handling legacy command line directly\n");
-    qemu_log("NCR710: Using bus: %p\n", &s->bus);
-
-    scsi_bus_legacy_handle_cmdline(&s->bus);
-
-    /* Debug: Check what devices are now on the bus */
-    BusChild *kid;
-    int device_count = 0;
-    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
-        device_count++;
-        SCSIDevice *scsi_dev = SCSI_DEVICE(kid->child);
-        qemu_log("NCR710: Legacy created device #%d: channel=%d target=%d lun=%d type=%s\n",
-                device_count, scsi_dev->channel, scsi_dev->id, scsi_dev->lun,
-                object_get_typename(OBJECT(scsi_dev)));
-    }
-    qemu_log("NCR710: Legacy handler created %d devices\n", device_count);
-}
-
-/* Main initialization function expected by HPPA machine */
 DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq)
 {
     DeviceState *dev;
@@ -3239,7 +3158,7 @@ DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq i
 static const struct SCSIBusInfo ncr710_scsi_info = {
     .tcq = false,     /* No tagged command queuing */
     .max_target = 8,  /* SCSI targets 0-7 */
-    .max_lun = 8,     /* LUNs 0-7, buggy? */
+    .max_lun = 8,     /* LUNs 0-7, lun is buggy in kernel? */
 
     .transfer_data = ncr710_transfer_data,
     .complete = ncr710_command_complete,
@@ -3270,45 +3189,20 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     trace_ncr710_device_realize();
     qemu_log("NCR710: Realize function called\n");
 
-    /* Initialize request queue */
     QTAILQ_INIT(&s->ncr710.queue);
-
-    /* Initialize SCSI bus with default naming */
-    qemu_log("NCR710: Initializing SCSI bus with info at %p\n", &ncr710_scsi_info);
-    qemu_log("NCR710: drained_begin callback at %p\n", ncr710_scsi_info.drained_begin);
-    qemu_log("NCR710: drained_end callback at %p\n", ncr710_scsi_info.drained_end);
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &ncr710_scsi_info);
-    qemu_log("NCR710: SCSI bus initialized, bus->info at %p\n", s->ncr710.bus.info);
-
-    /* Verify bus integrity immediately after init */
-    if (!s->ncr710.bus.info) {
-        qemu_log("NCR710: ERROR: bus->info is NULL immediately after scsi_bus_init!\n");
-    } else if (s->ncr710.bus.info != &ncr710_scsi_info) {
-        qemu_log("NCR710: ERROR: bus->info (%p) != expected (%p)\n", s->ncr710.bus.info, &ncr710_scsi_info);
-    }
-
-    /* Initialize address space for memory access */
     s->ncr710.as = &address_space_memory;
-
-    /* Initialize FIFOs */
     ncr710_dma_fifo_init(&s->ncr710.dma_fifo);
     ncr710_scsi_fifo_init(&s->ncr710.scsi_fifo);
-
     s->ncr710.selection_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
     s->ncr710.watchdog_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
-
-    /* Initialize default register values that Linux driver expects */
     s->ncr710.ctest8 = NCR710_REVISION_2;  /* NCR710 chip revision 2 */
     s->ncr710.scid = 0x80 | NCR710_DEFAULT_HOST_ID; /* Valid bit + SCSI ID 7 */
     s->ncr710.dstat = DSTAT_DFE;  /* DMA FIFO Empty initially */
     qemu_log("NCR710: Initialized DSTAT to 0x%02x\n", s->ncr710.dstat);
-
-    /* Initialize critical control registers */
     s->ncr710.dcntl = DCNTL_EA;    /* Enable Ack bit for 710 */
     s->ncr710.dmode = DMODE_FC2;   /* Flow Control 2 for 710 */
     s->ncr710.ctest7 = CTEST7_TT1; /* Transfer Type 1 for 710 */
-
-    /* Initialize SCRIPTS context */
     s->ncr710.scripts.running = false;
     s->ncr710.scripts.connected = false;
     s->ncr710.scripts.initiator = false;
@@ -3316,8 +3210,6 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     s->ncr710.scripts.pc = 0;
     s->ncr710.scripts.saved_pc = 0;
     s->ncr710.script_active = 0;
-
-    /* Initialize SCSI command state */
     s->ncr710.current = NULL;
     s->ncr710.select_tag = 0;
     s->ncr710.current_lun = 0;
@@ -3328,14 +3220,10 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     s->ncr710.msg_action = 0;
     s->ncr710.msg_len = 0;
     memset(s->ncr710.msg, 0, sizeof(s->ncr710.msg));
-
-    /* Device configuration */
     s->ncr710.selection_timeout_enabled = true;
     s->ncr710.big_endian = true;
     s->ncr710.burst_length = 1;
-    s->ncr710.tolerant_enabled = true;  /* Enable TolerANT active negation */
-
-    /* Clear interrupt states */
+    s->ncr710.tolerant_enabled = true;
     s->ncr710.istat = 0;
     s->ncr710.sstat0 = 0;
     s->ncr710.sstat1 = 0;
@@ -3353,11 +3241,8 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
 static void sysbus_ncr710_unrealize(DeviceState *dev)
 {
     SysBusNCR710State *s = SYSBUS_NCR710_SCSI(dev);
-
     trace_ncr710_device_unrealize();
-    qemu_log("NCR710: Device unrealize called\n");
 
-    /* Clean up timers */
     if (s->ncr710.selection_timer) {
         timer_free(s->ncr710.selection_timer);
         s->ncr710.selection_timer = NULL;
@@ -3373,17 +3258,12 @@ static void sysbus_ncr710_unrealize(DeviceState *dev)
 static void sysbus_ncr710_init(Object *obj)
 {
     SysBusNCR710State *s = SYSBUS_NCR710_SCSI(obj);
-
     qemu_log("NCR710: Instance init called\n");
-
-    /* Initialize the embedded NCR710 state directly */
     memset(&s->ncr710, 0, sizeof(NCR710State));
 
-    /* Set default register values that identify this as an NCR53C710 */
     s->ncr710.ctest0 = 0x01;  /* Chip revision 1 */
     s->ncr710.scid = 0x80 | NCR710_DEFAULT_HOST_ID; /* Valid bit + SCSI ID 7 */
-    s->ncr710.dstat = DSTAT_DFE;  /* DMA FIFO Empty */
-
+    s->ncr710.dstat = DSTAT_DFE;
     qemu_log("NCR710: State initialized\n");
 }
 
@@ -3395,7 +3275,7 @@ static void sysbus_ncr710_class_init(ObjectClass *oc, void *data)
     dc->unrealize = sysbus_ncr710_unrealize;
     dc->desc = "NCR53C710 SCSI I/O Processor (SysBus)";
     device_class_set_legacy_reset(dc, ncr710_device_reset);
-    dc->bus_type = NULL;  /* Explicitly set to NULL for sysbus devices */
+    dc->bus_type = NULL;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
@@ -3407,7 +3287,6 @@ static const TypeInfo sysbus_ncr710_info = {
     .class_init = sysbus_ncr710_class_init,
 };
 
-/* Module initialization */
 static void ncr710_register_types(void)
 {
     type_register_static(&sysbus_ncr710_info);
