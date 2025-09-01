@@ -439,9 +439,9 @@ static void ncr710_update_compatibility_mode(NCR710State *s)
 {
     bool old_mode = s->compatibility_mode;
     s->compatibility_mode = (s->dcntl & DCNTL_COM) != 0;
-    
+
     if (old_mode != s->compatibility_mode) {
-        qemu_log("NCR710: Switching to %s compatibility mode\n", 
+        qemu_log("NCR710: Switching to %s compatibility mode\n",
                  s->compatibility_mode ? "53C700" : "53C710");
     }
 }
@@ -1176,630 +1176,6 @@ static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count
         count -= n;
     }
 }
-
-/* Register read/write helpers for SCRIPTS processor */
-static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
-{
-    NCR710State *s = opaque;
-    uint8_t val = ncr710_reg_readb(s, addr & 0xff);
-    trace_ncr710_reg_read(addr & 0xff, val);
-    return val;
-}
-
-static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
-{
-    NCR710State *s = opaque;
-    trace_ncr710_reg_write(addr & 0xff, val & 0xff);
-    ncr710_reg_writeb(s, addr & 0xff, val & 0xff);
-}
-
-static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
-{
-    uint8_t ret;
-    bool is_700_mode = ncr710_is_700_mode(s);
-
-#define CASE_GET_REG24(name, addr) \
-    case addr: ret = s->name & 0xff; break; \
-    case addr + 1: ret = (s->name >> 8) & 0xff; break; \
-    case addr + 2: ret = (s->name >> 16) & 0xff; break;
-
-#define CASE_GET_REG32(name, addr) \
-    case addr: ret = s->name & 0xff; break; \
-    case addr + 1: ret = (s->name >> 8) & 0xff; break; \
-    case addr + 2: ret = (s->name >> 16) & 0xff; break; \
-    case addr + 3: ret = (s->name >> 24) & 0xff; break;
-
-    switch (offset) {
-        case NCR710_SCNTL0_REG: /* SCNTL0 */
-            ret = s->scntl0;
-            break;
-        case NCR710_SCNTL1_REG: /* SCNTL1 */
-            ret = s->scntl1;
-            if (is_700_mode) {
-                /* TODO:
-                 * In 700 mode: bits 1,0 are Start SCSI Send/Receive (removed in 710) */
-                /* These don't exist in 710, so mask them out in 710 mode */
-            }
-            break;
-        case NCR710_SDID_REG: /* SDID */
-            ret = s->sdid;
-            break;
-        case NCR710_SIEN_REG: /* SIEN */
-            ret = s->sien;
-            break;
-        case NCR710_SCID_REG:
-            ret = s->scid;
-            if ((ret & 0x7F) == 0) {
-                ret = 0x80 | NCR710_DEFAULT_HOST_ID;
-            } else {
-                ret |= 0x80;
-            }
-            break;
-        case NCR710_SXFER_REG: /* SXFER */
-            ret = s->sxfer;
-            break;
-        case NCR710_SODL_REG: /* SODL */
-            ret = s->sodl;
-            break;
-        case NCR710_SOCL_REG: /* SOCL */
-            ret = s->socl;
-            break;
-        case NCR710_SFBR_REG: /* SFBR */
-            ret = s->sfbr;
-            break;
-        case NCR710_SIDL_REG: /* SIDL */
-            ret = s->sidl;
-            break;
-        case NCR710_SBDL_REG: /* SBDL */
-            ret = s->sbdl;
-            break;
-        case NCR710_SBCL_REG: /* SBCL */
-            ret = 0;
-            if (s->scntl1 & SCNTL1_CON) {
-                ret = s->sstat2 & PHASE_MASK;
-                ret |= s->sbcl;
-                if (s->socl & SOCL_ATN)
-                    ret |= SBCL_ATN;
-            }
-            break;
-        case NCR710_DSTAT_REG: /* DSTAT: In 700 mode: bit 5 (Bus fault) doesn't exist */
-            ret = s->dstat | DSTAT_DFE;
-            if (is_700_mode) {
-                ret &= ~0x20;  /* Mask out bus fault bit */
-            }
-            s->dstat = 0;
-            ncr710_update_irq(s);
-            break;
-        case NCR710_SSTAT0_REG: /* SSTAT0 */
-            ret = s->sstat0;
-            if (s->sstat0 != 0) {
-                s->sstat0 = 0;
-                s->istat &= ~ISTAT_SIP;
-                ncr710_update_irq(s);
-            }
-            break;
-        case NCR710_SSTAT1_REG: /* SSTAT1 */
-            ret = s->sstat1;
-            break;
-        case NCR710_SSTAT2_REG: /* SSTAT2 */
-            ret = s->sstat2;
-            break;
-        CASE_GET_REG32(dsa, NCR710_DSA_REG)
-            if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA read in 700 compatibility mode\n");
-                return 0;
-            }
-            break;
-        case NCR710_CTEST0_REG: /* CTEST0 */
-            ret = s->ctest0;
-            break;
-        case NCR710_CTEST1_REG: /* CTEST1 */
-            ret = s->ctest1;
-            break;
-        case NCR710_CTEST2_REG: /* CTEST2 */
-            ret = s->ctest2;
-            if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                s->ctest2 |= 0x04;
-            } else {
-                s->ctest2 &= ~0x04;
-            }
-            break;
-        case NCR710_CTEST3_REG: /* CTEST3 */
-            ret = s->ctest3;
-            if (!ncr710_scsi_fifo_empty(&s->scsi_fifo)) {
-                uint8_t parity;
-                ret = ncr710_scsi_fifo_pop(&s->scsi_fifo, &parity);
-                if (parity) {
-                    s->ctest2 |= 0x10;
-                } else {
-                    s->ctest2 &= ~0x10;
-                }
-            }
-            break;
-        case NCR710_CTEST4_REG: /* CTEST4 */
-            ret = s->ctest4;
-            if (is_700_mode) {
-                /* In 700 mode: bit 7 (Mux mode) doesn't exist */
-                ret &= ~0x80;
-            }
-            break;
-        case NCR710_CTEST5_REG: /* CTEST5 */
-            ret = s->ctest5;
-            break;
-        case NCR710_CTEST6_REG: /* CTEST6 */
-            ret = s->ctest6;
-            if (!ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                uint8_t parity;
-                ret = ncr710_dma_fifo_pop(&s->dma_fifo, &parity);
-                if (parity) {
-                    s->ctest2 |= 0x08;
-                } else {
-                    s->ctest2 &= ~0x08;
-                }
-            }
-            break;
-        case NCR710_CTEST7_REG: /* CTEST7 */
-            if (is_700_mode) {
-                /* In 700 mode: bits 7-4 are chip revision, bit 1 is DCI pin control */
-                ret = (s->ctest7 & 0x0F) | (NCR710_REVISION_2 << 4);
-                /* DCI pin control is at bit 1 in 700 mode */
-                if (s->ctest7 & 0x02) {
-                    ret |= 0x02;
-                }
-            } else {
-                /* In 710 mode: new bits available */
-                ret = s->ctest7;
-            }
-            break;
-        CASE_GET_REG32(temp, NCR710_TEMP_REG)
-        case NCR710_DFIFO_REG: /* DFIFO */
-            if (is_700_mode) {
-                /* In 700 mode: bit 7 is flush FIFO, bit 6 is clear FIFO */
-                ret = s->dma_fifo.count & 0x3F; /* FIFO count (bits 5-0) */
-                /* Map 710 CTEST8 bits back to 700 DFIFO layout */
-                if (s->ctest8 & 0x08) ret |= 0x80;  /* Flush FIFO bit */
-                if (s->ctest8 & 0x04) ret |= 0x40;  /* Clear FIFO bit */
-            } else {
-                /* In 710 mode: return current DFIFO value with DMA FIFO status */
-                ret = s->dfifo;
-                s->dfifo = s->dma_fifo.count & 0x7F;
-                if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                    s->dfifo |= 0x80; /* Set DFE bit */
-                }
-                ret = s->dfifo;
-            }
-            break;
-        case NCR710_ISTAT_REG: /* ISTAT */
-            ret = s->istat;
-            if (is_700_mode) {
-                if (s->dsp == 0 && s->dsps == 0) {
-                    ret |= 0x04;  /* Set DSP/DSPS empty bit */
-                }
-                ret &= ~ISTAT_SIGP;  /* SIGP doesn't exist in 700 */
-                ret &= ~ISTAT_RST;
-            }
-            break;
-        case NCR710_CTEST8_REG: /* CTEST8 */
-            if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 read in 700 compatibility mode\n");
-                return 0;
-            }
-            ret = (s->ctest8 | (NCR710_REVISION_2 << 4)) & ~0x04;
-            break;
-        case NCR710_LCRC_REG: /* LCRC */
-            if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC read in 700 compatibility mode\n");
-                return 0;
-            }
-            ret = s->lcrc;
-            break;
-        CASE_GET_REG24(dbc, NCR710_DBC_REG)
-        case NCR710_DCMD_REG: /* DCMD */
-            ret = s->dcmd;
-            break;
-        CASE_GET_REG32(dnad, NCR710_DNAD_REG)
-        CASE_GET_REG32(dsp, NCR710_DSP_REG)
-        CASE_GET_REG32(dsps, NCR710_DSPS_REG)
-        CASE_GET_REG32(scratch, NCR710_SCRATCH_REG)
-            if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH read in 700 compatibility mode\n");
-                return 0;
-            }
-            break;
-        case NCR710_DMODE_REG: /* DMODE */
-            ret = s->dmode;
-            if (is_700_mode) {
-                /* In 700 mode: different bit meanings */
-                /* Bits 5-4: 16-bit DMA '286-mode bits (700 only) */
-                /* Bit 3: I/O-memory mapped DMA bit (700 only) */
-                /* Bit 1: Pipeline mode bit (700 only) */
-                /* Clear 710-specific function code bits */
-                ret &= ~0x38; /* Clear bits 5-3 which have different meanings in 710 */
-            }
-            break;
-        case NCR710_DIEN_REG: /* DIEN */
-            ret = s->dien;
-            if (is_700_mode) {
-                /* In 700 mode: bit 5 (Bus fault interrupt enable) doesn't exist */
-                ret &= ~0x20;
-            }
-            break;
-        case NCR710_DWT_REG: /* DWT */
-            ret = s->dwt;
-            break;
-        case NCR710_DCNTL_REG: /* DCNTL */
-            ret = s->dcntl;
-            if (is_700_mode) {
-                /* In 700 mode: mask out 710-specific bits */
-                ret &= ~(DCNTL_EA | DCNTL_COM);  /* These don't exist in 700 */
-                /* Software reset is bit 0 in 700 mode */
-            }
-            return ret;
-        CASE_GET_REG32(adder, NCR710_ADDER_REG)
-            if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER read in 700 compatibility mode\n");
-                return 0;
-            }
-            break;
-        default:
-            trace_ncr710_reg_read_unhandled(offset, 1);
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "NCR710: invalid read at offset 0x%x\n", (int)offset);
-            break;
-    }
-
-#undef CASE_GET_REG24
-#undef CASE_GET_REG32
-    return ret;
-}
-
-/* Unified register write function combining compatibility mode and FIFO handling */
-static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
-{
-    bool is_700_mode = ncr710_is_700_mode(s);
-    uint8_t old_val;
-
-#define CASE_SET_REG24(name, addr) \
-    case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
-    case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
-    case addr + 2: s->name &= 0xff00ffff; s->name |= val << 16; break;
-
-#define CASE_SET_REG32(name, addr) \
-    case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
-    case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
-    case addr + 2: s->name &= 0xff00ffff; s->name |= val << 16; break; \
-    case addr + 3: s->name &= 0x00ffffff; s->name |= val << 24; break;
-
-    NCR710_DPRINTF("Write reg %x = %02x\n", offset, val);
-    
-    switch (offset) {
-    case NCR710_SCNTL0_REG: /* SCNTL0 */
-        s->scntl0 = val;
-        if (val & SCNTL0_START) {
-            if (is_700_mode) {
-                qemu_log_mask(LOG_UNIMP, "NCR710: Start sequence not implemented\n");
-            } else {
-                ncr710_arbitrate_bus(s);
-            }
-        }
-        break;
-        
-    case NCR710_SCNTL1_REG: /* SCNTL1 */
-        old_val = s->scntl1;
-        s->scntl1 = val;
-        
-        if (val & SCNTL1_ADB) {
-            qemu_log_mask(LOG_UNIMP, "NCR710: Immediate Arbitration not implemented\n");
-        }
-        
-        if (val & SCNTL1_RST) {
-            if (!(s->sstat0 & SSTAT0_RST)) {
-                s->sstat0 |= SSTAT0_RST;
-                ncr710_script_scsi_interrupt(s, SSTAT0_RST);
-            }
-            /* Enhanced reset handling for second implementation */
-            if (!(old_val & SCNTL1_RST)) {
-                ncr710_internal_scsi_bus_reset(s);
-            }
-        } else {
-            s->sstat0 &= ~SSTAT0_RST;
-        }
-        break;
-        
-    case NCR710_SDID_REG: /* SDID */
-        s->sdid = val & 0x0F; /* Only lower 4 bits are valid */
-        break;
-        
-    case NCR710_SIEN_REG: /* SIEN */
-        s->sien = val;
-        ncr710_update_irq(s);
-        break;
-        
-    case NCR710_SCID_REG: /* SCID */
-        s->scid = val;
-        break;
-        
-    case NCR710_SXFER_REG: /* SXFER */
-        s->sxfer = val;
-        break;
-        
-    case NCR710_SODL_REG: /* SODL */
-        s->sodl = val;
-        s->sstat1 |= SSTAT1_OLF; /* From second implementation */
-        break;
-        
-    case NCR710_SOCL_REG: /* SOCL */
-        s->socl = val;
-        s->sbcl = val; /* From second implementation */
-        break;
-        
-    case NCR710_SFBR_REG: /* SFBR */
-        s->sfbr = val;
-        break;
-        
-    case NCR710_SIDL_REG: /* SIDL */
-        s->sidl = val;
-        break;
-        
-    case NCR710_SBDL_REG: /* SBDL */
-        s->sbdl = val;
-        break;
-        
-    case NCR710_SBCL_REG: /* SBCL */
-        ncr710_set_phase(s, val & PHASE_MASK);
-        break;
-        
-    case NCR710_DSTAT_REG: 
-    case NCR710_SSTAT0_REG: 
-    case NCR710_SSTAT1_REG: 
-    case NCR710_SSTAT2_REG:
-        /* Linux writes to these readonly registers on startup */
-        return;
-        
-    CASE_SET_REG32(dsa, NCR710_DSA_REG)
-        if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA write in 700 compatibility mode\n");
-            return;
-        }
-        break;
-        
-    case NCR710_CTEST0_REG: /* CTEST0 */
-        s->ctest0 = val;
-        if (val & 0x01) { /* EAN bit - from second implementation */
-            s->tolerant_enabled = true;
-        } else {
-            s->tolerant_enabled = false;
-        }
-        break;
-        
-    case NCR710_CTEST1_REG: /* CTEST1, read-only */
-        s->ctest1 = val; /* From second implementation - some bits may be writable */
-        break;
-        
-    case NCR710_CTEST2_REG: /* CTEST2, read-only */
-        s->ctest2 = val; /* From second implementation */
-        break;
-        
-    case NCR710_CTEST3_REG: /* CTEST3 */
-        s->ctest3 = val;
-        /* FIFO handling from second implementation */
-        if (!ncr710_scsi_fifo_full(&s->scsi_fifo)) {
-            uint8_t parity = ncr710_calculate_parity(val);
-            ncr710_scsi_fifo_push(&s->scsi_fifo, val, parity);
-        }
-        break;
-        
-    case NCR710_CTEST4_REG: /* CTEST4 */
-        s->ctest4 = val;
-        break;
-        
-    case NCR710_CTEST5_REG: /* CTEST5 */
-        s->ctest5 = val;
-        break;
-        
-    case NCR710_CTEST6_REG: /* CTEST6 */
-        s->ctest6 = val;
-        /* FIFO handling from second implementation */
-        if (!ncr710_dma_fifo_full(&s->dma_fifo)) {
-            uint8_t parity = (s->ctest7 & 0x08) ? 1 : 0; /* DFP bit */
-            ncr710_dma_fifo_push(&s->dma_fifo, val, parity);
-        }
-        break;
-        
-    case NCR710_CTEST7_REG: /* CTEST7 */
-        s->ctest7 = val;
-        /* Enhanced handling from second implementation */
-        if (val & 0x01) { /* DIFF bit */
-            s->differential_mode = true;
-        } else {
-            s->differential_mode = false;
-        }
-        s->cache_line_burst = !(val & 0x80); /* CDIS bit inverted */
-        break;
-        
-    CASE_SET_REG32(temp, NCR710_TEMP_REG)
-    
-    case NCR710_DFIFO_REG: /* DFIFO, read-only */
-        if (is_700_mode) {
-            /* In 700 mode: some bits may be writable for FIFO control */
-            /* Map to CTEST8 equivalents for compatibility */
-            if (val & 0x80) s->ctest8 |= 0x08;  /* Flush FIFO */
-            if (val & 0x40) s->ctest8 |= 0x04;  /* Clear FIFO */
-        }
-        break;
-        
-    case NCR710_ISTAT_REG: /* ISTAT */
-        if (is_700_mode) {
-            /* In 700 mode: no SIGP bit, no RST bit */
-            s->istat = (s->istat & 0x0f) | (val & 0xDF); /* Mask out SIGP and RST */
-        } else {
-            /* Normal 710 mode with enhanced handling from second implementation */
-            if (val & ISTAT_ABRT) {
-                s->scripts.running = false;
-                s->dstat |= DSTAT_ABRT;
-                s->istat |= ISTAT_DIP;
-                timer_del(s->selection_timer);
-                timer_del(s->watchdog_timer);
-                ncr710_script_dma_interrupt(s, DSTAT_ABRT);
-                ncr710_update_irq(s);
-            }
-            if (s->waiting == 1 && (val & ISTAT_SIGP)) {
-                NCR710_DPRINTF("Woken by SIGP\n");
-                s->waiting = 0;
-                s->dsp = s->dnad;
-                ncr710_scripts_execute(s);
-            }
-            if (val & ISTAT_RST) {
-                /* Enhanced reset from second implementation */
-                uint8_t saved_ctest8 = s->ctest8;
-                ncr710_soft_reset(s);
-                s->ctest8 = saved_ctest8;  /* Preserve chip revision */
-                s->dstat = DSTAT_DFE;
-                ncr710_dma_fifo_init(&s->dma_fifo);
-                ncr710_scsi_fifo_init(&s->scsi_fifo);
-            }
-            s->istat = (s->istat & 0x0f) | (val & 0xf0);
-        }
-        break;
-        
-    case NCR710_CTEST8_REG: /* CTEST8 */
-        if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 write in 700 compatibility mode\n");
-            return;
-        }
-        s->ctest8 = (s->ctest8 & 0xF0) | (val & 0x0F);
-        if (val & 0x04) { /* FLF bit - from second implementation */
-            ncr710_dma_fifo_flush(&s->dma_fifo);
-        }
-        break;
-        
-    case NCR710_LCRC_REG: /* LCRC */
-        if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC write in 700 compatibility mode\n");
-            return;
-        }
-        s->lcrc = val; /* From second implementation - preserve value */
-        break;
-        
-    CASE_SET_REG24(dbc, NCR710_DBC_REG)
-    
-    case NCR710_DCMD_REG: /* DCMD */
-        s->dcmd = val;
-        break;
-        
-    CASE_SET_REG32(dnad, NCR710_DNAD_REG)
-    
-    case NCR710_DSP_REG: /* DSP[0:7] */
-        s->dsp &= 0xffffff00;
-        s->dsp |= val;
-        if ((s->dmode & DMODE_MAN) == 0 && !is_700_mode) {
-            s->waiting = 0;
-            ncr710_scripts_execute(s);
-        }
-        break;
-    case NCR710_DSP_REG + 1: /* DSP[8:15] */
-        s->dsp &= 0xffff00ff;
-        s->dsp |= val << 8;
-        break;
-    case NCR710_DSP_REG + 2: /* DSP[16:23] */
-        s->dsp &= 0xff00ffff;
-        s->dsp |= val << 16;
-        break;
-    case NCR710_DSP_REG + 3: /* DSP[24:31] */
-        s->dsp &= 0x00ffffff;
-        s->dsp |= val << 24;
-        /* Enhanced handling from second implementation */
-        printf("=== NCR710: DSP register write complete: DSP=0x%08x ===\n", s->dsp);
-        fflush(stdout);
-        if (!is_700_mode && (s->dmode & DMODE_MAN) == 0) {
-            s->waiting = 0;
-            s->scripts.running = true;
-            s->scripts.pc = s->dsp;
-            ncr710_scripts_execute(s);
-        }
-        break;
-        
-    CASE_SET_REG32(dsps, NCR710_DSPS_REG)
-    
-    CASE_SET_REG32(scratch, NCR710_SCRATCH_REG)
-        if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH write in 700 compatibility mode\n");
-            return;
-        }
-        break;
-        
-    case NCR710_DMODE_REG: /* DMODE */
-        s->dmode = val;
-        if (is_700_mode) {
-            /* In 700 mode: different bit meanings */
-            /* Bits 5-4: 16-bit DMA '286-mode bits (700 only) */
-            /* Bit 3: I/O-memory mapped DMA bit (700 only) */
-            /* Bit 1: Pipeline mode bit (700 only) */
-            /* Clear 710-specific function code bits */
-            s->dmode &= ~0x38; /* Clear bits 5-3 which have different meanings in 710 */
-        } else {
-            /* Enhanced handling from second implementation */
-            switch (val & DMODE_BL_MASK) {
-            case 0x00: s->burst_length = 1; break;
-            case 0x40: s->burst_length = 2; break;
-            case 0x80: s->burst_length = 4; break;
-            case 0xC0: s->burst_length = 8; break;
-            }
-        }
-        break;
-        
-    case NCR710_DIEN_REG: /* DIEN */
-        s->dien = val;
-        if (is_700_mode) {
-            /* In 700 mode: bit 5 (Bus fault interrupt enable) doesn't exist */
-            s->dien &= ~0x20;
-        }
-        ncr710_update_irq(s);
-        break;
-        
-    case NCR710_DWT_REG: /* DWT */
-        s->dwt = val;
-        break;
-        
-    case NCR710_DCNTL_REG: /* DCNTL */
-        if (is_700_mode) {
-            /* In 700 mode: different bit layout */
-            s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD | DCNTL_EA);
-            /* Handle software reset bit (bit 0 in 700 mode) */
-            if (val & 0x01) {
-                ncr710_soft_reset(s);
-            }
-            /* 16-bit SCSI scripts mode is bit 5 in 700 */
-        } else {
-            /* Normal 710 mode with enhanced handling */
-            s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD);
-            if ((val & DCNTL_STD) && (s->dmode & DMODE_MAN) != 0) {
-                ncr710_scripts_execute(s);
-            }
-            /* From second implementation */
-            if (val & DCNTL_STD) {
-                ncr710_dma_transfer(s);
-            }
-        }
-        ncr710_update_compatibility_mode(s);
-        break;
-        
-    CASE_SET_REG32(adder, NCR710_ADDER_REG)
-        if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER write in 700 compatibility mode\n");
-            return;
-        }
-        break;
-        
-    default:
-        qemu_log_mask(LOG_UNIMP, "NCR710: write unknown register %02X\n", offset);
-        break;
-    }
-    
-#undef CASE_SET_REG24
-#undef CASE_SET_REG32
-}
-
 
 /* FIFO Implementation (DMA and SCSI)
  */
@@ -2758,10 +2134,631 @@ static void ncr710_command_complete(SCSIRequest *req, size_t resid)
     ncr710_resume_script(s);
 }
 
+/* Register read/write helpers for SCRIPTS processor */
+static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
+{
+    NCR710State *s = opaque;
+    uint8_t val = ncr710_reg_readb(s, addr & 0xff);
+    trace_ncr710_reg_read(addr & 0xff, val);
+    return val;
+}
 
+static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+{
+    NCR710State *s = opaque;
+    trace_ncr710_reg_write(addr & 0xff, val & 0xff);
+    ncr710_reg_writeb(s, addr & 0xff, val & 0xff);
+}
 
-/*  
-* QEMU Object Model Registration SysBus NCR710 device 
+static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
+{
+    uint8_t ret;
+    bool is_700_mode = ncr710_is_700_mode(s);
+
+#define CASE_GET_REG24(name, addr) \
+    case addr: ret = s->name & 0xff; break; \
+    case addr + 1: ret = (s->name >> 8) & 0xff; break; \
+    case addr + 2: ret = (s->name >> 16) & 0xff; break;
+
+#define CASE_GET_REG32(name, addr) \
+    case addr: ret = s->name & 0xff; break; \
+    case addr + 1: ret = (s->name >> 8) & 0xff; break; \
+    case addr + 2: ret = (s->name >> 16) & 0xff; break; \
+    case addr + 3: ret = (s->name >> 24) & 0xff; break;
+
+    switch (offset) {
+        case NCR710_SCNTL0_REG: /* SCNTL0 */
+            ret = s->scntl0;
+            break;
+        case NCR710_SCNTL1_REG: /* SCNTL1 */
+            ret = s->scntl1;
+            if (is_700_mode) {
+                /* TODO:
+                 * In 700 mode: bits 1,0 are Start SCSI Send/Receive (removed in 710) */
+                /* These don't exist in 710, so mask them out in 710 mode */
+            }
+            break;
+        case NCR710_SDID_REG: /* SDID */
+            ret = s->sdid;
+            break;
+        case NCR710_SIEN_REG: /* SIEN */
+            ret = s->sien;
+            break;
+        case NCR710_SCID_REG:
+            ret = s->scid;
+            if ((ret & 0x7F) == 0) {
+                ret = 0x80 | NCR710_DEFAULT_HOST_ID;
+            } else {
+                ret |= 0x80;
+            }
+            break;
+        case NCR710_SXFER_REG: /* SXFER */
+            ret = s->sxfer;
+            break;
+        case NCR710_SODL_REG: /* SODL */
+            ret = s->sodl;
+            break;
+        case NCR710_SOCL_REG: /* SOCL */
+            ret = s->socl;
+            break;
+        case NCR710_SFBR_REG: /* SFBR */
+            ret = s->sfbr;
+            break;
+        case NCR710_SIDL_REG: /* SIDL */
+            ret = s->sidl;
+            break;
+        case NCR710_SBDL_REG: /* SBDL */
+            ret = s->sbdl;
+            break;
+        case NCR710_SBCL_REG: /* SBCL */
+            ret = 0;
+            if (s->scntl1 & SCNTL1_CON) {
+                ret = s->sstat2 & PHASE_MASK;
+                ret |= s->sbcl;
+                if (s->socl & SOCL_ATN)
+                    ret |= SBCL_ATN;
+            }
+            break;
+        case NCR710_DSTAT_REG: /* DSTAT: In 700 mode: bit 5 (Bus fault) doesn't exist */
+            ret = s->dstat | DSTAT_DFE;
+            if (is_700_mode) {
+                ret &= ~0x20;  /* Mask out bus fault bit */
+            }
+            s->dstat = 0;
+            ncr710_update_irq(s);
+            break;
+        case NCR710_SSTAT0_REG: /* SSTAT0 */
+            ret = s->sstat0;
+            if (s->sstat0 != 0) {
+                s->sstat0 = 0;
+                s->istat &= ~ISTAT_SIP;
+                ncr710_update_irq(s);
+            }
+            break;
+        case NCR710_SSTAT1_REG: /* SSTAT1 */
+            ret = s->sstat1;
+            break;
+        case NCR710_SSTAT2_REG: /* SSTAT2 */
+            ret = s->sstat2;
+            break;
+        CASE_GET_REG32(dsa, NCR710_DSA_REG)
+            if (is_700_mode) {
+                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA read in 700 compatibility mode\n");
+                return 0;
+            }
+            break;
+        case NCR710_CTEST0_REG: /* CTEST0 */
+            ret = s->ctest0;
+            break;
+        case NCR710_CTEST1_REG: /* CTEST1 */
+            ret = s->ctest1;
+            break;
+        case NCR710_CTEST2_REG: /* CTEST2 */
+            ret = s->ctest2;
+            if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
+                s->ctest2 |= 0x04;
+            } else {
+                s->ctest2 &= ~0x04;
+            }
+            break;
+        case NCR710_CTEST3_REG: /* CTEST3 */
+            ret = s->ctest3;
+            if (!ncr710_scsi_fifo_empty(&s->scsi_fifo)) {
+                uint8_t parity;
+                ret = ncr710_scsi_fifo_pop(&s->scsi_fifo, &parity);
+                if (parity) {
+                    s->ctest2 |= 0x10;
+                } else {
+                    s->ctest2 &= ~0x10;
+                }
+            }
+            break;
+        case NCR710_CTEST4_REG: /* CTEST4 */
+            ret = s->ctest4;
+            if (is_700_mode) {
+                /* In 700 mode: bit 7 (Mux mode) doesn't exist */
+                ret &= ~0x80;
+            }
+            break;
+        case NCR710_CTEST5_REG: /* CTEST5 */
+            ret = s->ctest5;
+            break;
+        case NCR710_CTEST6_REG: /* CTEST6 */
+            ret = s->ctest6;
+            if (!ncr710_dma_fifo_empty(&s->dma_fifo)) {
+                uint8_t parity;
+                ret = ncr710_dma_fifo_pop(&s->dma_fifo, &parity);
+                if (parity) {
+                    s->ctest2 |= 0x08;
+                } else {
+                    s->ctest2 &= ~0x08;
+                }
+            }
+            break;
+        case NCR710_CTEST7_REG: /* CTEST7 */
+            if (is_700_mode) {
+                /* In 700 mode: bits 7-4 are chip revision, bit 1 is DCI pin control */
+                ret = (s->ctest7 & 0x0F) | (NCR710_REVISION_2 << 4);
+                /* DCI pin control is at bit 1 in 700 mode */
+                if (s->ctest7 & 0x02) {
+                    ret |= 0x02;
+                }
+            } else {
+                /* In 710 mode: new bits available */
+                ret = s->ctest7;
+            }
+            break;
+        CASE_GET_REG32(temp, NCR710_TEMP_REG)
+        case NCR710_DFIFO_REG: /* DFIFO */
+            if (is_700_mode) {
+                /* In 700 mode: bit 7 is flush FIFO, bit 6 is clear FIFO */
+                ret = s->dma_fifo.count & 0x3F; /* FIFO count (bits 5-0) */
+                /* Map 710 CTEST8 bits back to 700 DFIFO layout */
+                if (s->ctest8 & 0x08) ret |= 0x80;  /* Flush FIFO bit */
+                if (s->ctest8 & 0x04) ret |= 0x40;  /* Clear FIFO bit */
+            } else {
+                /* In 710 mode: return current DFIFO value with DMA FIFO status */
+                ret = s->dfifo;
+                s->dfifo = s->dma_fifo.count & 0x7F;
+                if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
+                    s->dfifo |= 0x80; /* Set DFE bit */
+                }
+                ret = s->dfifo;
+            }
+            break;
+        case NCR710_ISTAT_REG: /* ISTAT */
+            ret = s->istat;
+            if (is_700_mode) {
+                if (s->dsp == 0 && s->dsps == 0) {
+                    ret |= 0x04;  /* Set DSP/DSPS empty bit */
+                }
+                ret &= ~ISTAT_SIGP;  /* SIGP doesn't exist in 700 */
+                ret &= ~ISTAT_RST;
+            }
+            break;
+        case NCR710_CTEST8_REG: /* CTEST8 */
+            if (is_700_mode) {
+                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 read in 700 compatibility mode\n");
+                return 0;
+            }
+            ret = (s->ctest8 | (NCR710_REVISION_2 << 4)) & ~0x04;
+            break;
+        case NCR710_LCRC_REG: /* LCRC */
+            if (is_700_mode) {
+                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC read in 700 compatibility mode\n");
+                return 0;
+            }
+            ret = s->lcrc;
+            break;
+        CASE_GET_REG24(dbc, NCR710_DBC_REG)
+        case NCR710_DCMD_REG: /* DCMD */
+            ret = s->dcmd;
+            break;
+        CASE_GET_REG32(dnad, NCR710_DNAD_REG)
+        CASE_GET_REG32(dsp, NCR710_DSP_REG)
+        CASE_GET_REG32(dsps, NCR710_DSPS_REG)
+        CASE_GET_REG32(scratch, NCR710_SCRATCH_REG)
+            if (is_700_mode) {
+                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH read in 700 compatibility mode\n");
+                return 0;
+            }
+            break;
+        case NCR710_DMODE_REG: /* DMODE */
+            ret = s->dmode;
+            if (is_700_mode) {
+                /* In 700 mode: different bit meanings */
+                /* Bits 5-4: 16-bit DMA '286-mode bits (700 only) */
+                /* Bit 3: I/O-memory mapped DMA bit (700 only) */
+                /* Bit 1: Pipeline mode bit (700 only) */
+                /* Clear 710-specific function code bits */
+                ret &= ~0x38; /* Clear bits 5-3 which have different meanings in 710 */
+            }
+            break;
+        case NCR710_DIEN_REG: /* DIEN */
+            ret = s->dien;
+            if (is_700_mode) {
+                /* In 700 mode: bit 5 (Bus fault interrupt enable) doesn't exist */
+                ret &= ~0x20;
+            }
+            break;
+        case NCR710_DWT_REG: /* DWT */
+            ret = s->dwt;
+            break;
+        case NCR710_DCNTL_REG: /* DCNTL */
+            ret = s->dcntl;
+            if (is_700_mode) {
+                /* In 700 mode: mask out 710-specific bits */
+                ret &= ~(DCNTL_EA | DCNTL_COM);  /* These don't exist in 700 */
+                /* Software reset is bit 0 in 700 mode */
+            }
+            return ret;
+        CASE_GET_REG32(adder, NCR710_ADDER_REG)
+            if (is_700_mode) {
+                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER read in 700 compatibility mode\n");
+                return 0;
+            }
+            break;
+        default:
+            trace_ncr710_reg_read_unhandled(offset, 1);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "NCR710: invalid read at offset 0x%x\n", (int)offset);
+            break;
+    }
+
+#undef CASE_GET_REG24
+#undef CASE_GET_REG32
+    return ret;
+}
+
+/* Unified register write function combining compatibility mode and FIFO handling */
+static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
+{
+    bool is_700_mode = ncr710_is_700_mode(s);
+    uint8_t old_val;
+
+#define CASE_SET_REG24(name, addr) \
+    case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
+    case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
+    case addr + 2: s->name &= 0xff00ffff; s->name |= val << 16; break;
+
+#define CASE_SET_REG32(name, addr) \
+    case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
+    case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
+    case addr + 2: s->name &= 0xff00ffff; s->name |= val << 16; break; \
+    case addr + 3: s->name &= 0x00ffffff; s->name |= val << 24; break;
+
+    NCR710_DPRINTF("Write reg %x = %02x\n", offset, val);
+
+    switch (offset) {
+    case NCR710_SCNTL0_REG: /* SCNTL0 */
+        s->scntl0 = val;
+        if (val & SCNTL0_START) {
+            if (is_700_mode) {
+                qemu_log_mask(LOG_UNIMP, "NCR710: Start sequence not implemented\n");
+            } else {
+                ncr710_arbitrate_bus(s);
+            }
+        }
+        break;
+
+    case NCR710_SCNTL1_REG: /* SCNTL1 */
+        old_val = s->scntl1;
+        s->scntl1 = val;
+
+        if (val & SCNTL1_ADB) {
+            qemu_log_mask(LOG_UNIMP, "NCR710: Immediate Arbitration not implemented\n");
+        }
+
+        if (val & SCNTL1_RST) {
+            if (!(s->sstat0 & SSTAT0_RST)) {
+                s->sstat0 |= SSTAT0_RST;
+                ncr710_script_scsi_interrupt(s, SSTAT0_RST);
+            }
+            /* Enhanced reset handling for second implementation */
+            if (!(old_val & SCNTL1_RST)) {
+                ncr710_internal_scsi_bus_reset(s);
+            }
+        } else {
+            s->sstat0 &= ~SSTAT0_RST;
+        }
+        break;
+
+    case NCR710_SDID_REG: /* SDID */
+        s->sdid = val & 0x0F; /* Only lower 4 bits are valid */
+        break;
+
+    case NCR710_SIEN_REG: /* SIEN */
+        s->sien = val;
+        ncr710_update_irq(s);
+        break;
+
+    case NCR710_SCID_REG: /* SCID */
+        s->scid = val;
+        break;
+
+    case NCR710_SXFER_REG: /* SXFER */
+        s->sxfer = val;
+        break;
+
+    case NCR710_SODL_REG: /* SODL */
+        s->sodl = val;
+        s->sstat1 |= SSTAT1_OLF; /* From second implementation */
+        break;
+
+    case NCR710_SOCL_REG: /* SOCL */
+        s->socl = val;
+        s->sbcl = val; /* From second implementation */
+        break;
+
+    case NCR710_SFBR_REG: /* SFBR */
+        s->sfbr = val;
+        break;
+
+    case NCR710_SIDL_REG: /* SIDL */
+        s->sidl = val;
+        break;
+
+    case NCR710_SBDL_REG: /* SBDL */
+        s->sbdl = val;
+        break;
+
+    case NCR710_SBCL_REG: /* SBCL */
+        ncr710_set_phase(s, val & PHASE_MASK);
+        break;
+
+    case NCR710_DSTAT_REG:
+    case NCR710_SSTAT0_REG:
+    case NCR710_SSTAT1_REG:
+    case NCR710_SSTAT2_REG:
+        /* Linux writes to these readonly registers on startup */
+        return;
+
+    CASE_SET_REG32(dsa, NCR710_DSA_REG)
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA write in 700 compatibility mode\n");
+            return;
+        }
+        break;
+
+    case NCR710_CTEST0_REG: /* CTEST0 */
+        s->ctest0 = val;
+        if (val & 0x01) { /* EAN bit - from second implementation */
+            s->tolerant_enabled = true;
+        } else {
+            s->tolerant_enabled = false;
+        }
+        break;
+
+    case NCR710_CTEST1_REG: /* CTEST1, read-only */
+        s->ctest1 = val; /* From second implementation - some bits may be writable */
+        break;
+
+    case NCR710_CTEST2_REG: /* CTEST2, read-only */
+        s->ctest2 = val; /* From second implementation */
+        break;
+
+    case NCR710_CTEST3_REG: /* CTEST3 */
+        s->ctest3 = val;
+        /* FIFO handling from second implementation */
+        if (!ncr710_scsi_fifo_full(&s->scsi_fifo)) {
+            uint8_t parity = ncr710_calculate_parity(val);
+            ncr710_scsi_fifo_push(&s->scsi_fifo, val, parity);
+        }
+        break;
+
+    case NCR710_CTEST4_REG: /* CTEST4 */
+        s->ctest4 = val;
+        break;
+
+    case NCR710_CTEST5_REG: /* CTEST5 */
+        s->ctest5 = val;
+        break;
+
+    case NCR710_CTEST6_REG: /* CTEST6 */
+        s->ctest6 = val;
+        /* FIFO handling from second implementation */
+        if (!ncr710_dma_fifo_full(&s->dma_fifo)) {
+            uint8_t parity = (s->ctest7 & 0x08) ? 1 : 0; /* DFP bit */
+            ncr710_dma_fifo_push(&s->dma_fifo, val, parity);
+        }
+        break;
+
+    case NCR710_CTEST7_REG: /* CTEST7 */
+        s->ctest7 = val;
+        /* Enhanced handling from second implementation */
+        if (val & 0x01) { /* DIFF bit */
+            s->differential_mode = true;
+        } else {
+            s->differential_mode = false;
+        }
+        s->cache_line_burst = !(val & 0x80); /* CDIS bit inverted */
+        break;
+
+    CASE_SET_REG32(temp, NCR710_TEMP_REG)
+
+    case NCR710_DFIFO_REG: /* DFIFO, read-only */
+        if (is_700_mode) {
+            /* In 700 mode: some bits may be writable for FIFO control */
+            /* Map to CTEST8 equivalents for compatibility */
+            if (val & 0x80) s->ctest8 |= 0x08;  /* Flush FIFO */
+            if (val & 0x40) s->ctest8 |= 0x04;  /* Clear FIFO */
+        }
+        break;
+
+    case NCR710_ISTAT_REG: /* ISTAT */
+        if (is_700_mode) {
+            /* In 700 mode: no SIGP bit, no RST bit */
+            s->istat = (s->istat & 0x0f) | (val & 0xDF); /* Mask out SIGP and RST */
+        } else {
+            /* Normal 710 mode with enhanced handling from second implementation */
+            if (val & ISTAT_ABRT) {
+                s->scripts.running = false;
+                s->dstat |= DSTAT_ABRT;
+                s->istat |= ISTAT_DIP;
+                timer_del(s->selection_timer);
+                timer_del(s->watchdog_timer);
+                ncr710_script_dma_interrupt(s, DSTAT_ABRT);
+                ncr710_update_irq(s);
+            }
+            if (s->waiting == 1 && (val & ISTAT_SIGP)) {
+                NCR710_DPRINTF("Woken by SIGP\n");
+                s->waiting = 0;
+                s->dsp = s->dnad;
+                ncr710_scripts_execute(s);
+            }
+            if (val & ISTAT_RST) {
+                /* Enhanced reset from second implementation */
+                uint8_t saved_ctest8 = s->ctest8;
+                ncr710_soft_reset(s);
+                s->ctest8 = saved_ctest8;  /* Preserve chip revision */
+                s->dstat = DSTAT_DFE;
+                ncr710_dma_fifo_init(&s->dma_fifo);
+                ncr710_scsi_fifo_init(&s->scsi_fifo);
+            }
+            s->istat = (s->istat & 0x0f) | (val & 0xf0);
+        }
+        break;
+
+    case NCR710_CTEST8_REG: /* CTEST8 */
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 write in 700 compatibility mode\n");
+            return;
+        }
+        s->ctest8 = (s->ctest8 & 0xF0) | (val & 0x0F);
+        if (val & 0x04) { /* FLF bit - from second implementation */
+            ncr710_dma_fifo_flush(&s->dma_fifo);
+        }
+        break;
+
+    case NCR710_LCRC_REG: /* LCRC */
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC write in 700 compatibility mode\n");
+            return;
+        }
+        s->lcrc = val; /* From second implementation - preserve value */
+        break;
+
+    CASE_SET_REG24(dbc, NCR710_DBC_REG)
+
+    case NCR710_DCMD_REG: /* DCMD */
+        s->dcmd = val;
+        break;
+
+    CASE_SET_REG32(dnad, NCR710_DNAD_REG)
+
+    case NCR710_DSP_REG: /* DSP[0:7] */
+        s->dsp &= 0xffffff00;
+        s->dsp |= val;
+        if ((s->dmode & DMODE_MAN) == 0 && !is_700_mode) {
+            s->waiting = 0;
+            ncr710_scripts_execute(s);
+        }
+        break;
+    case NCR710_DSP_REG + 1: /* DSP[8:15] */
+        s->dsp &= 0xffff00ff;
+        s->dsp |= val << 8;
+        break;
+    case NCR710_DSP_REG + 2: /* DSP[16:23] */
+        s->dsp &= 0xff00ffff;
+        s->dsp |= val << 16;
+        break;
+    case NCR710_DSP_REG + 3: /* DSP[24:31] */
+        s->dsp &= 0x00ffffff;
+        s->dsp |= val << 24;
+        /* Enhanced handling from second implementation */
+        printf("=== NCR710: DSP register write complete: DSP=0x%08x ===\n", s->dsp);
+        fflush(stdout);
+        if (!is_700_mode && (s->dmode & DMODE_MAN) == 0) {
+            s->waiting = 0;
+            s->scripts.running = true;
+            s->scripts.pc = s->dsp;
+            ncr710_scripts_execute(s);
+        }
+        break;
+
+    CASE_SET_REG32(dsps, NCR710_DSPS_REG)
+
+    CASE_SET_REG32(scratch, NCR710_SCRATCH_REG)
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH write in 700 compatibility mode\n");
+            return;
+        }
+        break;
+
+    case NCR710_DMODE_REG: /* DMODE */
+        s->dmode = val;
+        if (is_700_mode) {
+            /* In 700 mode: different bit meanings */
+            /* Bits 5-4: 16-bit DMA '286-mode bits (700 only) */
+            /* Bit 3: I/O-memory mapped DMA bit (700 only) */
+            /* Bit 1: Pipeline mode bit (700 only) */
+            /* Clear 710-specific function code bits */
+            s->dmode &= ~0x38; /* Clear bits 5-3 which have different meanings in 710 */
+        } else {
+            /* Enhanced handling from second implementation */
+            switch (val & DMODE_BL_MASK) {
+            case 0x00: s->burst_length = 1; break;
+            case 0x40: s->burst_length = 2; break;
+            case 0x80: s->burst_length = 4; break;
+            case 0xC0: s->burst_length = 8; break;
+            }
+        }
+        break;
+
+    case NCR710_DIEN_REG: /* DIEN */
+        s->dien = val;
+        if (is_700_mode) {
+            /* In 700 mode: bit 5 (Bus fault interrupt enable) doesn't exist */
+            s->dien &= ~0x20;
+        }
+        ncr710_update_irq(s);
+        break;
+
+    case NCR710_DWT_REG: /* DWT */
+        s->dwt = val;
+        break;
+
+    case NCR710_DCNTL_REG: /* DCNTL */
+        if (is_700_mode) {
+            /* In 700 mode: different bit layout */
+            s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD | DCNTL_EA);
+            /* Handle software reset bit (bit 0 in 700 mode) */
+            if (val & 0x01) {
+                ncr710_soft_reset(s);
+            }
+            /* 16-bit SCSI scripts mode is bit 5 in 700 */
+        } else {
+            /* Normal 710 mode with enhanced handling */
+            s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD);
+            if ((val & DCNTL_STD) && (s->dmode & DMODE_MAN) != 0) {
+                ncr710_scripts_execute(s);
+            }
+            /* From second implementation */
+            if (val & DCNTL_STD) {
+                ncr710_dma_transfer(s);
+            }
+        }
+        ncr710_update_compatibility_mode(s);
+        break;
+
+    CASE_SET_REG32(adder, NCR710_ADDER_REG)
+        if (is_700_mode) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER write in 700 compatibility mode\n");
+            return;
+        }
+        break;
+
+    default:
+        qemu_log_mask(LOG_UNIMP, "NCR710: write unknown register %02X\n", offset);
+        break;
+    }
+
+#undef CASE_SET_REG24
+#undef CASE_SET_REG32
+}
+
+/*
+* QEMU Object Model Registration SysBus NCR710 device
 */
 
 /* TODO: FIX Draining causing segmentation fault */
@@ -2809,13 +2806,13 @@ static void ncr710_command_complete(SCSIRequest *req, size_t resid)
 //     trace_ncr710_drained_end();
 //     s->draining = false;
 //     s->waiting = s->drain_state.saved_waiting;
-    
+
 //     if (s->drain_state.was_running && s->drain_state.saved_dsp != 0) {
 //         s->dsp = s->drain_state.saved_dsp;
 //         s->scripts.running = true;
 //         ncr710_scripts_execute(s);
 //     }
-    
+
 //     QTAILQ_FOREACH(req, &s->queue, next) {
 //         if (req->pending) {
 //             ncr710_reselect(s, req);
