@@ -3050,67 +3050,69 @@ static void ncr710_command_complete(SCSIRequest *req, size_t resid)
     ncr710_resume_script(s);
 }
 
-static void ncr710_drained_begin(SCSIBus *bus)
-{
-    SysBusNCR710State *sysbus_s = container_of(bus, SysBusNCR710State, ncr710.bus);
-    NCR710State *s = &sysbus_s->ncr710;
+/* TODO: FIX Draining causing segmentation fault */
+// static void ncr710_drained_begin(SCSIBus *bus)
+// {
+//     SysBusNCR710State *sysbus_s = container_of(bus, SysBusNCR710State, ncr710.bus);
+//     NCR710State *s = &sysbus_s->ncr710;
 
-    if (s->draining) {
-        return;
-    }
+//     if (s->draining) {
+//         return;
+//     }
 
-    trace_ncr710_drained_begin();
-    s->draining = true;
-    s->drain_state.was_running = s->scripts.running;
-    s->drain_state.saved_dsp = s->dsp;
-    s->drain_state.saved_waiting = s->waiting;
+//     trace_ncr710_drained_begin();
+//     s->draining = true;
+//     s->drain_state.was_running = s->scripts.running;
+//     s->drain_state.saved_dsp = s->dsp;
+//     s->drain_state.saved_waiting = s->waiting;
 
-    s->scripts.running = false;
-    s->script_active = 0;
-    s->waiting = 0;
+//     s->scripts.running = false;
+//     s->script_active = 0;
+//     s->waiting = 0;
 
-    if (s->selection_timer) {
-        timer_del(s->selection_timer);
-    }
-    if (s->watchdog_timer) {
-        timer_del(s->watchdog_timer);
-    }
-    ncr710_dma_fifo_flush(&s->dma_fifo);
+//     if (s->selection_timer) {
+//         timer_del(s->selection_timer);
+//     }
+//     if (s->watchdog_timer) {
+//         timer_del(s->watchdog_timer);
+//     }
+//     ncr710_dma_fifo_flush(&s->dma_fifo);
 
-    qemu_log("NCR710: Drain begin completed\n");
-}
+//     qemu_log("NCR710: Drain begin completed\n");
+// }
 
-static void ncr710_drained_end(SCSIBus *bus)
-{
-    SysBusNCR710State *sysbus_s = container_of(bus, SysBusNCR710State, ncr710.bus);
-    NCR710State *s = &sysbus_s->ncr710;
+// /* TODO: FIX Draining causing segmentation fault */
+// static void ncr710_drained_end(SCSIBus *bus)
+// {
+//     SysBusNCR710State *sysbus_s = container_of(bus, SysBusNCR710State, ncr710.bus);
+//     NCR710State *s = &sysbus_s->ncr710;
+//     NCR710Request *req;
 
-    if (!s->draining) {
-        return;
-    }
+//     if (!s || !s->draining) {
+//         return;
+//     }
 
-    trace_ncr710_drained_end();
-    s->draining = false;
-    s->waiting = s->drain_state.saved_waiting;
-    if (s->drain_state.was_running && s->drain_state.saved_dsp != 0) {
-        s->dsp = s->drain_state.saved_dsp;
-        s->scripts.running = true;
-        ncr710_scripts_execute(s);
-    }
-    NCR710Request *req;
-    QTAILQ_FOREACH(req, &s->queue, next) {
-        if (req->pending) {
-            ncr710_reselect(s, req);
-            break;
-        }
-    }
+//     trace_ncr710_drained_end();
+//     s->draining = false;
+//     s->waiting = s->drain_state.saved_waiting;
+    
+//     if (s->drain_state.was_running && s->drain_state.saved_dsp != 0) {
+//         s->dsp = s->drain_state.saved_dsp;
+//         s->scripts.running = true;
+//         ncr710_scripts_execute(s);
+//     }
+    
+//     QTAILQ_FOREACH(req, &s->queue, next) {
+//         if (req->pending) {
+//             ncr710_reselect(s, req);
+//             break;
+//         }
+//     }
 
-    qemu_log("NCR710: Drain end completed\n");
-}
+//     qemu_log("NCR710: Drain end completed\n");
+// }
 
-/* QEMU Object Model Registration
- * SysBus NCR710 device
- */
+/* ===|| QEMU Object Model Registration SysBus NCR710 device ||=== */
 DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
 {
     DeviceState *dev;
@@ -3163,8 +3165,6 @@ static const struct SCSIBusInfo ncr710_scsi_info = {
     .transfer_data = ncr710_transfer_data,
     .complete = ncr710_command_complete,
     .cancel = ncr710_request_cancelled,
-    .drained_begin = ncr710_drained_begin,
-    .drained_end = ncr710_drained_end,
 };
 
 /* Memory region operations */
