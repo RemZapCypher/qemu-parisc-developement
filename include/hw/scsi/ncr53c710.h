@@ -21,9 +21,25 @@
 #include "qemu/timer.h"
 #include "qemu/queue.h"
 
-/* Device identification */
 #define TYPE_NCR710_SCSI "ncr710-scsi"
 #define TYPE_SYSBUS_NCR710_SCSI "sysbus-ncr710-scsi"
+
+#define NCR710_REG_SIZE 0x100
+
+#define NCR710_DPRINTF(fmt, ...) \
+    do { \
+        if (NCR710_DEBUG) { \
+            fprintf(stderr, "ncr710: " fmt, ## __VA_ARGS__); \
+        } \
+    } while (0)
+
+#ifndef NCR710_DEBUG
+#define NCR710_DEBUG 0
+#endif
+
+/* Constants for FIFO sizes */
+#define NCR710_DMA_FIFO_SIZE    64
+#define NCR710_SCSI_FIFO_SIZE   8
 
 /* SCSI phases */
 typedef enum {
@@ -33,7 +49,7 @@ typedef enum {
     SCSI_PHASE_STATUS   = 3,
     SCSI_PHASE_MSG_OUT  = 6,
     SCSI_PHASE_MSG_IN   = 7,
-} ScsiPhase;
+};
 
 typedef struct {
     uint32_t count:24;
@@ -52,25 +68,6 @@ typedef struct {
     uint32_t phase:3;
     uint32_t opcode:5;
 } ScriptsTransferInst;
-
-/* Register access macros */
-#define NCR710_REG_SIZE 0x100
-
-/* Debugging and tracing */
-#define NCR710_DPRINTF(fmt, ...) \
-    do { \
-        if (NCR710_DEBUG) { \
-            fprintf(stderr, "ncr710: " fmt, ## __VA_ARGS__); \
-        } \
-    } while (0)
-
-#ifndef NCR710_DEBUG
-#define NCR710_DEBUG 0
-#endif
-
-/* Constants for FIFO sizes */
-#define NCR710_DMA_FIFO_SIZE    64
-#define NCR710_SCSI_FIFO_SIZE   8
 
 /* DMA FIFO structure */
 typedef struct {
@@ -112,13 +109,6 @@ typedef struct {
     bool connected;     /* Connected to SCSI bus */
     bool initiator;     /* True if initiator, false if target */
 } NCR710_SCRIPTS_Context;
-
-/* Drain state structure for bus draining */
-typedef struct {
-    bool was_running;
-    uint32_t saved_dsp;
-    int saved_waiting;
-} NCR710DrainState;
 
 /* Forward declarations for device types */
 typedef struct NCR710State NCR710State;
