@@ -391,13 +391,18 @@ static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo);
 static bool ncr710_scsi_fifo_empty(NCR710_SCSI_FIFO *fifo);
 static bool ncr710_scsi_fifo_full(NCR710_SCSI_FIFO *fifo);
 static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t parity);
+static void ncr710_scsi_fifo_push_data(NCR710State *s, uint8_t data);
 static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity);
+static uint8_t ncr710_scsi_fifo_pop_data(NCR710State *s);
 
 /* 4. Memory access helpers */
 static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr);
 static void ncr710_write_memory(NCR710State *s, uint32_t addr, const void *buf, int len);
 static void ncr710_read_memory(NCR710State *s, uint32_t addr, void *buf, int len);
 static uint32_t ncr710_calculate_parity(uint8_t data);
+static uint8_t ncr710_generate_scsi_parity(NCR710State *s, uint8_t data);
+static bool ncr710_check_scsi_parity(NCR710State *s, uint8_t data, uint8_t received_parity);
+static void ncr710_handle_parity_error(NCR710State *s);
 static int ncr710_idbitstonum(int id);
 static inline int ncr710_irq_on_rsl(NCR710State *s);
 
@@ -1299,6 +1304,26 @@ static void ncr710_scsi_fifo_push(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t 
     }
 }
 
+/* Enhanced SCSI FIFO push with automatic parity generation */
+static void __attribute__((unused)) ncr710_scsi_fifo_push_data(NCR710State *s, uint8_t data)
+{
+    uint8_t parity = 0;
+
+    /* Generate parity if parity generation is enabled */
+    if (s->scntl0 & SCNTL0_EPG) {
+        parity = ncr710_generate_scsi_parity(s, data);
+    }
+
+    ncr710_scsi_fifo_push(&s->scsi_fifo, data, parity);
+
+    /* Update SSTAT1 SDP bit with current parity */
+    if (parity) {
+        s->sstat1 |= SSTAT1_SDP;
+    } else {
+        s->sstat1 &= ~SSTAT1_SDP;
+    }
+}
+
 static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
 {
     uint8_t data = 0;
@@ -1320,6 +1345,27 @@ static uint8_t ncr710_scsi_fifo_pop(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
         trace_ncr710_scsi_fifo_pop(data, parity_val, fifo->count);
     } else {
         trace_ncr710_scsi_fifo_underflow();
+    }
+
+    return data;
+}
+
+/* Enhanced SCSI FIFO pop with automatic parity checking */
+static uint8_t __attribute__((unused)) ncr710_scsi_fifo_pop_data(NCR710State *s)
+{
+    uint8_t parity;
+    uint8_t data = ncr710_scsi_fifo_pop(&s->scsi_fifo, &parity);
+
+    /* Check parity if parity checking is enabled */
+    if (!ncr710_check_scsi_parity(s, data, parity)) {
+        ncr710_handle_parity_error(s);
+    }
+
+    /* Update SSTAT2 SDP bit with received parity */
+    if (parity) {
+        s->sstat2 |= SSTAT2_SDP;
+    } else {
+        s->sstat2 &= ~SSTAT2_SDP;
     }
 
     return data;
@@ -1355,6 +1401,19 @@ static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
             }
         }
         printf("=== End SCRIPTS dump ===\n");
+
+        /* fail safe for all zeros */
+        bool all_zeros = true;
+        for (i = 0; i < 8; i++) {
+            if (dump[i] != 0) {
+                all_zeros = false;
+                break;
+            }
+        }
+        if (all_zeros) {
+            printf("*** WARNING: SCRIPTS memory at DSP appears uninitialized (all zeros) ***\n");
+            printf("*** This suggests kernel driver hasn't loaded SCRIPTS yet or DSP points to wrong location ***\n");
+        }
     }
 
     if (address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED,
@@ -1380,6 +1439,49 @@ static uint32_t ncr710_calculate_parity(uint8_t data)
     }
 
     return parity & 1;
+}
+
+/* Calculate parity according to NCR710 spec:
+ * - Default is odd parity
+ * - SCNTL1_AESP controls even/odd parity assertion
+ */
+static uint8_t ncr710_generate_scsi_parity(NCR710State *s, uint8_t data)
+{
+    uint8_t parity = ncr710_calculate_parity(data);
+
+    if (s->scntl1 & SCNTL1_AESP) {
+        parity = !parity;  /* Even parity */
+    }
+
+    return parity;
+}
+
+static bool ncr710_check_scsi_parity(NCR710State *s, uint8_t data, uint8_t received_parity)
+{
+    if (!(s->scntl0 & SCNTL0_EPC)) {
+        return true; /* No parity checking - assume OK */
+    }
+
+    uint8_t expected_parity = ncr710_generate_scsi_parity(s, data);
+    return (expected_parity == received_parity);
+}
+
+static void ncr710_handle_parity_error(NCR710State *s)
+{
+    uint8_t calculated_parity = ncr710_calculate_parity(s->sfbr);
+    uint8_t expected_parity = (s->scntl1 & SCNTL1_AESP) ? 0 : 1; /* Even/Odd parity */
+    trace_ncr710_parity_error(s->sfbr, expected_parity, calculated_parity);
+
+    s->sstat0 |= SSTAT0_PAR;
+
+    if (s->scntl0 & SCNTL0_AAP) {
+        s->socl |= SOCL_ATN;
+        trace_ncr710_atn_asserted_parity_error();
+    }
+
+    if (s->sien & SIEN_PAR) {
+        ncr710_script_scsi_interrupt(s, SSTAT0_PAR);
+    }
 }
 
 static void ncr710_update_irq(NCR710State *s)
@@ -1564,6 +1666,13 @@ static void ncr710_scripts_execute(NCR710State *s)
     int insn_processed = 0;
 
     trace_ncr710_scripts_start(s->dsp);
+
+    /* shouldn't start SCRIPTS if we're already in an error state? */
+    if ((s->dstat & DSTAT_IID) || !s->dsp) {
+        NCR710_DPRINTF("SCRIPTS execution blocked: error state or invalid DSP=0x%08x\n", s->dsp);
+        return;
+    }
+
     s->script_active = 1;
     s->scripts.running = true;
 
@@ -1579,20 +1688,23 @@ again:
         /* Empty opcode - this can happen in uninitialized memory */
         NCR710_DPRINTF("Empty opcode at DSP=0x%08x\n", s->dsp);
 
-        /* NCR710: If we encounter too many empty opcodes, stop execution
-         * to prevent infinite loops. This indicates SCRIPTS not properly loaded. */
-        if (insn_processed > 10) {
-            NCR710_DPRINTF("Too many empty opcodes (%d), stopping SCRIPTS\n", insn_processed);
-            trace_ncr710_scripts_stop(s->dsp, "too many empty opcodes");
+        /* NCR710: According to manual, empty opcode (0x00000000) can be treated as NOP.
+         * However, if we encounter too many in sequence, this likely indicates
+         * that SCRIPTS haven't been properly loaded yet by the kernel driver.
+         * Some kernel drivers set DSP first, then load SCRIPTS afterward. */
+        if (insn_processed > 5) {
+            NCR710_DPRINTF("Many empty opcodes (%d) - likely uninitialized SCRIPTS. Stopping execution for now.\n", insn_processed);
+            trace_ncr710_scripts_stop(s->dsp, "uninitialized SCRIPTS");
+
+            /* Don't set error flags - just stop execution and wait
+             * for kernel to load proper SCRIPTS */
             s->scripts.running = false;
             s->script_active = 0;
-            s->dstat |= DSTAT_IID; /* Illegal Instruction Detected */
-            s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
-            ncr710_update_irq(s);
+            s->waiting = 1;  /* Set waiting state so we can resume when SCRIPTS are loaded */
             return;
         }
 
-        s->dsp += 4;
+        s->dsp += 8;  /* SCRIPTS instructions are 8 bytes (2 words) */
         goto again;
     }
 
@@ -1607,6 +1719,11 @@ again:
         s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
         ncr710_update_irq(s);
         return;
+    }
+
+    if (insn_processed == 0) {  /* Only trace on first instruction to avoid spam */
+        trace_ncr710_scripts_memory_loaded(s->dsp, insn);
+        NCR710_DPRINTF("SCRIPTS memory appears loaded: DSP=0x%08x, opcode=0x%08x\n", s->dsp, insn);
     }
 
     /* Additional bounds checking for the DSP address */
@@ -1634,55 +1751,83 @@ again:
             ncr710_stop_script(s);
             break;
         }
-        s->dbc = insn & 0xffffff;
-        if (insn & (1 << 29)) {
-            /* Indirect addressing */
+
+        /* Extract byte count from bits 0-23 */
+        s->dbc = insn & SCRIPTS_BM_COUNT_MASK;
+
+        /* Check for opcode validity according to NCR710 manual
+         * Bit 27 (SCRIPTS_BM_OPCODE) should be:
+         * 0 = CHMOV (Compare and Move) - not supported in all modes
+         * 1 = MOVE (standard move)
+         */
+        bool is_move_opcode = (insn & SCRIPTS_BM_OPCODE) != 0;
+        /* According to NCR710 manual:
+         * Bit 27 (SCRIPTS_BM_OPCODE): 0 = CHMOV, 1 = MOVE
+         * This determines if it's a simple data move (MOVE) or
+         * a change and move (CHMOV) instruction */
+        (void)is_move_opcode; /* TODO: Implement CHMOV vs MOVE distinction */
+        uint8_t expected_phase = (insn & SCRIPTS_BM_PHASE_MASK) >> 24;
+
+        /* Handle addressing modes */
+        if (insn & SCRIPTS_BM_INDIRECT) {
+            /* Indirect addressing - fetch address from memory */
             addr = ncr710_read_memory_32(s, addr);
-        } else if (insn & (1 << 28)) {
+            trace_ncr710_scripts_indirect_addressing(addr, s->dbc);
+        } else if (insn & SCRIPTS_BM_TABLE) {
+            /* Table indirect addressing */
             uint32_t buf[2];
             int32_t offset;
-            /* Table indirect addressing */
 
-            /* 32-bit Table indirect */
+            /* 32-bit Table indirect according to manual */
             offset = sextract32(addr, 0, 24);
             ncr710_read_memory(s, s->dsa + offset, buf, 8);
+
             /* byte count is stored in bits 0:23 only */
-            s->dbc = le32_to_cpu(buf[0]) & 0xffffff;
+            s->dbc = le32_to_cpu(buf[0]) & SCRIPTS_BM_COUNT_MASK;
             addr = le32_to_cpu(buf[1]);
+
+            trace_ncr710_scripts_table_indirect(s->dsa, offset, s->dbc, addr);
         }
-        if ((s->sstat2 & PHASE_MASK) != ((insn >> 24) & 7)) {
-            NCR710_DPRINTF("Wrong phase got %d expected %d\n",
-                    s->sstat2 & PHASE_MASK, (insn >> 24) & 7);
-            trace_ncr710_phase_change(s->sstat2 & PHASE_MASK, (insn >> 24) & 7);
 
-            /* NCR710: Phase mismatch handling for kernel compatibility
-             * The kernel driver expects specific interrupt behavior:
-             * - SSTAT0_M_A (phase mismatch) interrupt
-             * - SCRIPTS execution halted
-             * - Proper phase and register state preserved */
-            s->dstat |= DSTAT_IID;  /* Illegal instruction (phase mismatch) */
-            s->istat |= ISTAT_DIP;  /* DMA interrupt pending */
+        /* Phase verification according to NCR710 spec */
+        uint8_t current_phase = s->sstat2 & PHASE_MASK;
+        if (current_phase != expected_phase) {
+            NCR710_DPRINTF("Phase mismatch: current=%d expected=%d at DSP=0x%08x\n",
+                    current_phase, expected_phase, s->dsp - 8);
+            trace_ncr710_phase_change(current_phase, expected_phase);
 
-            /* Preserve the current DSP for kernel driver resume */
-            s->dsp -= 8; /* Back up to current instruction */
+            /* NCR710: Phase mismatch handling according to manual
+             * - Set Phase Mismatch/ATN Active bit in SSTAT0
+             * - Preserve current instruction address in DSP
+             * - Generate interrupt if enabled
+             * - Halt SCRIPTS execution
+             */
+            s->sstat0 |= SSTAT0_M_A;  /* Phase Mismatch/ATN Active */
 
-            /* Generate phase mismatch interrupt */
-            ncr710_script_scsi_interrupt(s, SSTAT0_M_A);
+            /* Back up DSP to current instruction for resume */
+            s->dsp -= 8;
 
-            /* NCR710: Halt SCRIPTS execution - kernel will resume */
+            /* Generate phase mismatch interrupt if enabled */
+            if (s->sien & SIEN_M_A) {
+                ncr710_script_scsi_interrupt(s, SSTAT0_M_A);
+            }
+
+            /* Halt SCRIPTS execution - kernel will handle phase mismatch */
             s->scripts.running = false;
             s->script_active = 0;
 
-            /* Assert REQ to indicate bus phase */
-            s->sbcl |= SBCL_REQ;
+            /* Update SCSI bus control lines according to current phase */
+            s->sbcl |= SBCL_REQ;  /* Assert REQ to indicate bus phase */
 
-            /* Update interrupt status */
             ncr710_update_irq(s);
             return; /* Exit SCRIPTS execution */
         }
+
         s->dnad = addr;
-        trace_ncr710_scripts_block_move(s->dbc, s->sstat2 & 0x7, addr);
-        switch (s->sstat2 & 0x7) {
+        trace_ncr710_scripts_block_move(s->dbc, current_phase, addr);
+
+        /* Execute phase-specific operations */
+        switch (current_phase) {
         case PHASE_DO:
             NCR710_DPRINTF("Data OUT phase, DBC=%d\n", s->dbc);
             s->waiting = 2;
@@ -1703,6 +1848,7 @@ again:
             break;
         case PHASE_ST:
             ncr710_do_status(s);
+            break;
             break;
         case PHASE_MO:
             trace_ncr710_scripts_msgout_start(s->dbc);
@@ -2055,7 +2201,7 @@ static void ncr710_dma_transfer(NCR710State *s)
 
 /* SCSI command initiation - TODO: integrate with SCRIPTS processor */
 
-static void ncr710_scsi_command_start(NCR710State *s, uint8_t target, uint8_t lun, uint8_t *cdb, uint32_t cdb_len)
+static void __attribute__((unused)) ncr710_scsi_command_start(NCR710State *s, uint8_t target, uint8_t lun, uint8_t *cdb, uint32_t cdb_len)
 {
     SCSIDevice *d;
     SCSIRequest *req;
@@ -2259,9 +2405,35 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_SSTAT1_REG: /* SSTAT1 */
             ret = s->sstat1;
+            /* Update SCSI Parity bit (SDP) with live parity signal */
+            if (s->scntl0 & SCNTL0_EPG) {
+                /* If parity generation is enabled, read live parity from bus */
+                /* For now, simulate based on FIFO content or bus state */
+                if (!ncr710_scsi_fifo_empty(&s->scsi_fifo)) {
+                    /* Use parity from FIFO if available */
+                    uint8_t parity;
+                    uint8_t data = s->scsi_fifo.data[0];
+                    parity = s->scsi_fifo.parity[0];
+                    (void)data; /* Suppress unused variable warning - data is for parity calculation reference */
+                    if (parity) {
+                        ret |= SSTAT1_SDP;
+                    } else {
+                        ret &= ~SSTAT1_SDP;
+                    }
+                }
+            }
             break;
         case NCR710_SSTAT2_REG: /* SSTAT2 */
             ret = s->sstat2;
+            /* Update latched SCSI Data Parity (SDP) bit from SIDL register */
+            if (s->sidl != 0) {
+                uint8_t expected_parity = ncr710_generate_scsi_parity(s, s->sidl);
+                if (expected_parity) {
+                    ret |= SSTAT2_SDP;
+                } else {
+                    ret &= ~SSTAT2_SDP;
+                }
+            }
             break;
         CASE_GET_REG32(dsa, NCR710_DSA_REG)
             if (is_700_mode) {
@@ -2453,7 +2625,25 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     switch (offset) {
     case NCR710_SCNTL0_REG: /* SCNTL0 */
+        old_val = s->scntl0;
         s->scntl0 = val;
+
+        /* Handle parity control bits according to NCR710 manual */
+        if ((val & SCNTL0_EPC) != (old_val & SCNTL0_EPC)) {
+            /* Enable Parity Checking bit changed */
+            trace_ncr710_parity_checking_changed((val & SCNTL0_EPC) != 0);
+        }
+
+        if ((val & SCNTL0_EPG) != (old_val & SCNTL0_EPG)) {
+            /* Enable Parity Generation bit changed */
+            trace_ncr710_parity_generation_changed((val & SCNTL0_EPG) != 0);
+        }
+
+        if ((val & SCNTL0_AAP) != (old_val & SCNTL0_AAP)) {
+            /* Assert ATN/ on Parity Error bit changed */
+            trace_ncr710_atn_on_parity_changed((val & SCNTL0_AAP) != 0);
+        }
+
         if (val & SCNTL0_START) {
             if (is_700_mode) {
                 qemu_log_mask(LOG_UNIMP, "NCR710: Start sequence not implemented\n");
@@ -2466,6 +2656,11 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
     case NCR710_SCNTL1_REG: /* SCNTL1 */
         old_val = s->scntl1;
         s->scntl1 = val;
+
+        /* Handle Assert Even SCSI Parity (AESP) bit changes */
+        if ((val & SCNTL1_AESP) != (old_val & SCNTL1_AESP)) {
+            trace_ncr710_parity_sense_changed((val & SCNTL1_AESP) != 0 ? "even" : "odd");
+        }
 
         if (val & SCNTL1_ADB) {
             qemu_log_mask(LOG_UNIMP, "NCR710: Immediate Arbitration not implemented\n");
@@ -2561,10 +2756,20 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_CTEST3_REG: /* CTEST3 */
         s->ctest3 = val;
-        /* FIFO handling from second implementation */
+        /* SCSI FIFO write - use proper parity generation */
         if (!ncr710_scsi_fifo_full(&s->scsi_fifo)) {
-            uint8_t parity = ncr710_calculate_parity(val);
+            uint8_t parity = 0;
+            if (s->scntl0 & SCNTL0_EPG) {
+                parity = ncr710_generate_scsi_parity(s, val);
+            }
             ncr710_scsi_fifo_push(&s->scsi_fifo, val, parity);
+
+            /* Update CTEST2 bit 4 (SCSI FIFO Parity) according to manual */
+            if (parity) {
+                s->ctest2 |= 0x10;
+            } else {
+                s->ctest2 &= ~0x10;
+            }
         }
         break;
 
@@ -2578,10 +2783,17 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_CTEST6_REG: /* CTEST6 */
         s->ctest6 = val;
-        /* FIFO handling from second implementation */
+        /* DMA FIFO write - use proper parity from CTEST1 bit 3 (DFP) */
         if (!ncr710_dma_fifo_full(&s->dma_fifo)) {
-            uint8_t parity = (s->ctest7 & 0x08) ? 1 : 0; /* DFP bit */
+            uint8_t parity = (s->ctest1 & 0x08) ? 1 : 0; /* DFP bit from CTEST1 */
             ncr710_dma_fifo_push(&s->dma_fifo, val, parity);
+
+            /* Update CTEST2 bit 3 (DMA FIFO Parity) according to manual */
+            if (parity) {
+                s->ctest2 |= 0x08;
+            } else {
+                s->ctest2 &= ~0x08;
+            }
         }
         break;
 
@@ -2689,7 +2901,13 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         s->dsp |= val << 24;
         /* Enhanced handling from second implementation */
         trace_ncr710_dsp_write_complete(s->dsp, is_700_mode, s->dmode);
+        NCR710_DPRINTF("DSP set to 0x%08x, mode=%s, DSTAT=0x%02x\n",
+                       s->dsp, is_700_mode ? "700" : "710", s->dstat);
         if (!is_700_mode) {
+            /* Clear previous error state on new DSP write */
+            s->dstat &= ~DSTAT_IID;
+            s->istat &= ~ISTAT_DIP;
+
             /* SCRIPTS always starts on DSP write in NCR710 mode
              * DMODE_MAN only affects DMA auto-start, not SCRIPTS execution */
             trace_ncr710_scripts_autostart(s->dsp);
