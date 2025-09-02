@@ -668,7 +668,7 @@ static void ncr710_write_memory(NCR710State *s, uint32_t addr, const void *buf, 
     }
 
     if (address_space_write(s->as, addr, MEMTXATTRS_UNSPECIFIED, buf, len) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DMA write failed at 0x%08x\n", addr);
+        printf("NCR710: DMA write failed at 0x%08x\n", addr);
     }
 }
 
@@ -685,14 +685,14 @@ static void ncr710_read_memory(NCR710State *s, uint32_t addr, void *buf, int len
     }
 
     if (result != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DMA read FAILED at 0x%08x (result=%d) val=0x%08x\n", addr, result, val);
+        printf("NCR710: DMA read FAILED at 0x%08x (result=%d) val=0x%08x\n", addr, result, val);
         memset(buf, 0, len);
     } else {
         qemu_log("NCR710: DMA read SUCCESS at 0x%08x val=0x%08x len=%d\n", addr, val, len);
 
         /* Special check for SCRIPTS reading all zeros from memory */
         if (len == 4 && val == 0 && addr < 0x00100000) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SUSPICIOUS zero read from low memory 0x%08x - SCRIPTS may not be loaded\n", addr);
+            printf("NCR710: SUSPICIOUS zero read from low memory 0x%08x - SCRIPTS may not be loaded\n", addr);
         }
     }
 }
@@ -726,7 +726,7 @@ static int ncr710_queue_req(NCR710State *s, SCSIRequest *req, uint32_t len)
     NCR710Request *p = (NCR710Request*)req->hba_private;
 
     if (p->pending) {
-        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: Multiple IO pending for request %p\n", p);
+        printf("NCR710: Multiple IO pending for request %p\n", p);
     }
     p->pending = len;
 
@@ -748,7 +748,7 @@ static int ncr710_queue_req(NCR710State *s, SCSIRequest *req, uint32_t len)
 static void ncr710_add_msg_byte(NCR710State *s, uint8_t data)
 {
     if (s->msg_len >= NCR710_MAX_MSGIN_LEN) {
-        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: MSG IN data too long\n");
+        printf("NCR710: MSG IN data too long\n");
     } else {
         NCR710_DPRINTF("MSG IN 0x%02x\n", data);
         s->msg[s->msg_len++] = data;
@@ -999,7 +999,7 @@ static void ncr710_do_status(NCR710State *s)
 
     /* Status phase should transfer exactly 1 byte */
     if (s->dbc != 1) {
-        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: Bad Status move, expected 1 byte, got %d\n", s->dbc);
+        printf("NCR710: Bad Status move, expected 1 byte, got %d\n", s->dbc);
         s->dbc = 1;  /* Force to 1 byte */
     }
 
@@ -1061,7 +1061,7 @@ static void ncr710_do_msgin(NCR710State *s)
             ncr710_set_phase(s, PHASE_DI);
             break;
         default:
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: Invalid message action %d\n", s->msg_action);
+            printf("NCR710: Invalid message action %d\n", s->msg_action);
             ncr710_script_scsi_interrupt(s, SSTAT0_SGE);
             break;
         }
@@ -1189,7 +1189,7 @@ static void ncr710_do_msgout(NCR710State *s)
     return;
 
 bad:
-    qemu_log_mask(LOG_GUEST_ERROR, "NCR710: Unimplemented message 0x%02x\n", msg);
+    printf("NCR710: Unimplemented message 0x%02x\n", msg);
     ncr710_set_phase(s, PHASE_MI);
     ncr710_add_msg_byte(s, 7); /* MESSAGE REJECT */
     s->msg_action = 0;
@@ -1379,8 +1379,7 @@ static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
 
     /* Check if address space is initialized */
     if (!s->as) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "NCR710: address space not initialized, using fallback\n");
+        printf("NCR710: address space not initialized, using fallback\n");
         s->as = &address_space_memory;
     }
 
@@ -1418,8 +1417,7 @@ static uint32_t ncr710_read_memory_32(NCR710State *s, uint32_t addr)
 
     if (address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED,
                           (uint8_t *)&value, 4) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "NCR710: failed to read memory at 0x%08x\n", addr);
+        printf("NCR710: failed to read memory at 0x%08x\n", addr);
         return 0;
     }
 
@@ -1859,7 +1857,7 @@ again:
             ncr710_do_msgin(s);
             break;
         default:
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: Unimplemented phase %d\n", s->sstat2 & PHASE_MASK);
+            printf("NCR710: Unimplemented phase %d\n", s->sstat2 & PHASE_MASK);
         }
         s->ctest5 = (s->ctest5 & 0xfc) | ((s->dbc >> 8) & 3);
         s->sbc = s->dbc;
@@ -2146,8 +2144,7 @@ again:
              * But NOT Load and Store instructions which were added in later LSI chips.
              */
             NCR710_DPRINTF("Load/Store instruction not supported in NCR710 (LSI extension)\n");
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "NCR710: Load/Store instruction 0x%08x not supported (LSI53C895A extension)\n",
+            printf("NCR710: Load/Store instruction 0x%08x not supported (LSI53C895A extension)\n",
                          insn);
             ncr710_script_dma_interrupt(s, DSTAT_IID); /* Illegal Instruction Detected */
         }
@@ -2159,7 +2156,7 @@ again:
            assume this is the case and force an unexpected device disconnect.
            This is apparently sufficient to beat the drivers into submission. */
         if (!(s->sien & SIEN_UDC))
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: infinite loop with UDC masked\n");
+            printf("NCR710: infinite loop with UDC masked\n");
         ncr710_script_scsi_interrupt(s, SSTAT0_UDC);
         ncr710_disconnect(s);
     } else if (s->script_active && !s->waiting) {
@@ -2437,7 +2434,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         CASE_GET_REG32(dsa, NCR710_DSA_REG)
             if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA read in 700 compatibility mode\n");
+                printf("NCR710: DSA read in 700 compatibility mode\n");
                 return 0;
             }
             break;
@@ -2532,14 +2529,14 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_CTEST8_REG: /* CTEST8 */
             if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 read in 700 compatibility mode\n");
+                printf("NCR710: CTEST8 read in 700 compatibility mode\n");
                 return 0;
             }
             ret = (s->ctest8 | (NCR710_REVISION_2 << 4)) & ~0x04;
             break;
         case NCR710_LCRC_REG: /* LCRC */
             if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC read in 700 compatibility mode\n");
+                printf("NCR710: LCRC read in 700 compatibility mode\n");
                 return 0;
             }
             ret = s->lcrc;
@@ -2553,7 +2550,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
         CASE_GET_REG32(dsps, NCR710_DSPS_REG)
         CASE_GET_REG32(scratch, NCR710_SCRATCH_REG)
             if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH read in 700 compatibility mode\n");
+                printf("NCR710: SCRATCH read in 700 compatibility mode\n");
                 return 0;
             }
             break;
@@ -2588,14 +2585,13 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             return ret;
         CASE_GET_REG32(adder, NCR710_ADDER_REG)
             if (is_700_mode) {
-                qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER read in 700 compatibility mode\n");
+                printf("NCR710: ADDER read in 700 compatibility mode\n");
                 return 0;
             }
             break;
         default:
             trace_ncr710_reg_read_unhandled(offset, 1);
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "NCR710: invalid read at offset 0x%x\n", (int)offset);
+            printf("NCR710: invalid read at offset 0x%x\n", (int)offset);
             break;
     }
 
@@ -2732,7 +2728,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     CASE_SET_REG32(dsa, NCR710_DSA_REG)
         if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DSA write in 700 compatibility mode\n");
+            printf("NCR710: DSA write in 700 compatibility mode\n");
             return;
         }
         break;
@@ -2855,7 +2851,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_CTEST8_REG: /* CTEST8 */
         if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: CTEST8 write in 700 compatibility mode\n");
+            printf("NCR710: CTEST8 write in 700 compatibility mode\n");
             return;
         }
         s->ctest8 = (s->ctest8 & 0xF0) | (val & 0x0F);
@@ -2866,7 +2862,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_LCRC_REG: /* LCRC */
         if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: LCRC write in 700 compatibility mode\n");
+            printf("NCR710: LCRC write in 700 compatibility mode\n");
             return;
         }
         s->lcrc = val; /* From second implementation - preserve value */
@@ -2924,7 +2920,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     CASE_SET_REG32(scratch, NCR710_SCRATCH_REG)
         if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SCRATCH write in 700 compatibility mode\n");
+            printf("NCR710: SCRATCH write in 700 compatibility mode\n");
             return;
         }
         break;
@@ -2992,7 +2988,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     CASE_SET_REG32(adder, NCR710_ADDER_REG)
         if (is_700_mode) {
-            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: ADDER write in 700 compatibility mode\n");
+            printf("NCR710: ADDER write in 700 compatibility mode\n");
             return;
         }
         break;
@@ -3009,68 +3005,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 /*
 * QEMU Object Model Registration SysBus NCR710 device
 */
-
-/* TODO: FIX Draining causing segmentation fault */
-// static void ncr710_drained_begin(SCSIBus *bus)
-// {
-//     SysBusNCR710State *sysbus_s = container_of(bus, SysBusNCR710State, ncr710.bus);
-//     NCR710State *s = &sysbus_s->ncr710;
-
-//     if (s->draining) {
-//         return;
-//     }
-
-//     trace_ncr710_drained_begin();
-//     s->draining = true;
-//     s->drain_state.was_running = s->scripts.running;
-//     s->drain_state.saved_dsp = s->dsp;
-//     s->drain_state.saved_waiting = s->waiting;
-
-//     s->scripts.running = false;
-//     s->script_active = 0;
-//     s->waiting = 0;
-
-//     if (s->selection_timer) {
-//         timer_del(s->selection_timer);
-//     }
-//     if (s->watchdog_timer) {
-//         timer_del(s->watchdog_timer);
-//     }
-//     ncr710_dma_fifo_flush(&s->dma_fifo);
-
-//     qemu_log("NCR710: Drain begin completed\n");
-// }
-
-// /* TODO: FIX Draining causing segmentation fault */
-// static void ncr710_drained_end(SCSIBus *bus)
-// {
-//     SysBusNCR710State *sysbus_s = container_of(bus, SysBusNCR710State, ncr710.bus);
-//     NCR710State *s = &sysbus_s->ncr710;
-//     NCR710Request *req;
-
-//     if (!s || !s->draining) {
-//         return;
-//     }
-
-//     trace_ncr710_drained_end();
-//     s->draining = false;
-//     s->waiting = s->drain_state.saved_waiting;
-
-//     if (s->drain_state.was_running && s->drain_state.saved_dsp != 0) {
-//         s->dsp = s->drain_state.saved_dsp;
-//         s->scripts.running = true;
-//         ncr710_scripts_execute(s);
-//     }
-
-//     QTAILQ_FOREACH(req, &s->queue, next) {
-//         if (req->pending) {
-//             ncr710_reselect(s, req);
-//             break;
-//         }
-//     }
-
-//     qemu_log("NCR710: Drain end completed\n");
-// }
 
 DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
 {
