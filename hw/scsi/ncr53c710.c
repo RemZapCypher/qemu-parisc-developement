@@ -106,8 +106,10 @@
 #define SIEN_FCMP               0x40    /* Function Complete */
 #define SIEN_STO                0x20    /* SCSI Bus Timeout */
 #define SIEN_SEL                0x10    /* Selected/Reselected */
+#define SIEN_RSL                0x10    /* Reselected (alias for SEL) */
 #define SIEN_SGE                0x08    /* SCSI Gross Error */
 #define SIEN_UDC                0x04    /* Unexpected Disconnect */
+#define SIEN_DIS                0x04    /* Disconnect (alias for UDC) */
 #define SIEN_RST                0x02    /* SCSI RST/ Received */
 #define SIEN_PAR                0x01    /* Parity Error */
 
@@ -158,6 +160,7 @@
 #define SSTAT0_FCMP             0x40    /* Function Complete */
 #define SSTAT0_STO              0x20    /* SCSI Bus Timeout */
 #define SSTAT0_SEL              0x10    /* Selected/Reselected */
+#define SSTAT0_RSL              0x10    /* Reselected (alias for SEL) */
 #define SSTAT0_SGE              0x08    /* SCSI Gross Error */
 #define SSTAT0_UDC              0x04    /* Unexpected Disconnect */
 #define SSTAT0_RST              0x02    /* SCSI RST/ Received */
@@ -375,7 +378,6 @@ static uint8_t ncr710_get_msgbyte(NCR710State *s);
 static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n);
 static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count);
 static void ncr710_wait_reselect(NCR710State *s);
-static void ncr710_handle_direct_scsi_command(NCR710State *s);
 
 /* 3. FIFO management functions */
 static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo);
@@ -400,16 +402,6 @@ static int ncr710_idbitstonum(int id);
 static inline int ncr710_irq_on_rsl(NCR710State *s);
 
 /* 5. Register access functions */
-
-// static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size);
-// static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
-
-
-
-
-
-
-
 static uint8_t ncr710_reg_readb(NCR710State *s, int offset);
 static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val);
 
@@ -424,10 +416,14 @@ static void sysbus_ncr710_init(Object *obj);
 static void sysbus_ncr710_class_init(ObjectClass *oc, void *data);
 static void ncr710_register_types(void);
 
-// Diff TODO: investigate reselection interrupt handling difference
+// NCR710: Check if IRQ on reselection is enabled
 static inline int ncr710_irq_on_rsl(NCR710State *s)
 {
-    return 0; //return (s->sien0 & LSI_SIST0_RSL) && (s->scid & LSI_SCID_RRE);
+    /* NCR710: Enable reselection interrupt if:
+     * - SIEN register has reselection enabled (SIEN_SEL)
+     * - SCID register has reselection response enabled
+     * For NCR710, this is different from LSI implementation */
+    return (s->sien & SIEN_SEL) && (s->scid & 0x80); // 0x80 is the enable bit in SCID
 }
 
 bool ncr710_is_700_mode(NCR710State *s)
@@ -532,22 +528,62 @@ static void ncr710_script_scsi_interrupt(NCR710State *s, int stat0)
     uint32_t mask0;
 
     NCR710_DPRINTF("SCSI Interrupt 0x%02x prev 0x%02x\n", stat0, s->sstat0);
+
+    /* NCR710: Enhanced interrupt handling for kernel driver compatibility */
     s->sstat0 |= stat0;
+    s->istat |= ISTAT_SIP; /* SCSI Interrupt Pending */
 
     /* Stop processor on fatal or unmasked interrupt. As a special hack
        we don't stop processing when raising STO. Instead continue
        execution and stop at the next insn that accesses the SCSI bus. */
     mask0 = s->sien | ~(SSTAT0_FCMP | SSTAT0_SEL);
     if (s->sstat0 & mask0) {
+        /* NCR710: Kernel drivers expect SCRIPTS to stop on interrupts */
         ncr710_stop_script(s);
+        s->script_active = 0;
+        s->scripts.running = false;
     }
+
+    /* NCR710: Special handling for specific interrupt types that kernel drivers rely on */
+    switch (stat0) {
+    case SSTAT0_M_A: /* Phase mismatch */
+        /* Preserve DSP pointing to the instruction that caused mismatch */
+        break;
+    case SSTAT0_RSL: /* Reselected */
+        /* Kernel expects immediate notification of reselection */
+        s->scntl1 |= SCNTL1_CON; /* Connected */
+        break;
+    case SSTAT0_STO: /* Selection timeout */
+        /* Disconnect and clear connection state */
+        s->scntl1 &= ~SCNTL1_CON;
+        break;
+    case SSTAT0_UDC: /* Unexpected disconnect */
+        s->scntl1 &= ~SCNTL1_CON;
+        s->scripts.connected = false;
+        break;
+    }
+
     ncr710_update_irq(s);
 }
 
 static void ncr710_script_dma_interrupt(NCR710State *s, int stat)
 {
     NCR710_DPRINTF("DMA Interrupt 0x%x prev 0x%x\n", stat, s->dstat);
+
+    /* NCR710: Enhanced DMA interrupt for kernel compatibility */
     s->dstat |= stat;
+    s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
+
+    /* NCR710: Kernel drivers expect SCRIPTS to halt on DMA interrupts */
+    s->script_active = 0;
+    s->scripts.running = false;
+
+    /* Special handling for SCRIPTS interrupt (SIR) */
+    if (stat & DSTAT_SIR) {
+        /* SCRIPTS Interrupt Received - preserve DSPS for kernel */
+        trace_ncr710_scripts_interrupt(s->dsps, s->dsp);
+    }
+
     ncr710_update_irq(s);
     ncr710_stop_script(s);
 }
@@ -618,16 +654,12 @@ static void ncr710_write_memory(NCR710State *s, uint32_t addr, const void *buf, 
     /* Log any memory writes, especially potential SCRIPTS uploads */
     if (len >= 4) {
         const uint32_t *words = (const uint32_t *)buf;
-        qemu_log("NCR710: Memory write addr=0x%08x len=%d data=0x%08x",
-                 addr, len, words[0]);
-        printf("=== NCR710: Memory write addr=0x%08x len=%d data=0x%08x",
-               addr, len, words[0]);
+        NCR710_DPRINTF("Memory write addr=0x%08x len=%d data=0x%08x", addr, len, words[0]);
         if (len >= 8) {
-            qemu_log(" 0x%08x", words[1]);
-            printf(" 0x%08x", words[1]);
+            NCR710_DPRINTF(" 0x%08x", words[1]);
         }
-        qemu_log("\n");
-        printf(" ===\n");
+        NCR710_DPRINTF("\n");
+        trace_ncr710_write_memory(addr, words[0]);
     }
 
     if (address_space_write(s->as, addr, MEMTXATTRS_UNSPECIFIED, buf, len) != MEMTX_OK) {
@@ -641,9 +673,22 @@ static void ncr710_read_memory(NCR710State *s, uint32_t addr, void *buf, int len
         s->as = &address_space_memory;
     }
 
-    if (address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED, buf, len) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DMA read failed at 0x%08x\n", addr);
+    MemTxResult result = address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED, buf, len);
+    uint32_t val = 0;
+    if (len == 4) {
+        val = ldl_be_p(buf);
+    }
+
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "NCR710: DMA read FAILED at 0x%08x (result=%d) val=0x%08x\n", addr, result, val);
         memset(buf, 0, len);
+    } else {
+        qemu_log("NCR710: DMA read SUCCESS at 0x%08x val=0x%08x len=%d\n", addr, val, len);
+
+        /* Special check for SCRIPTS reading all zeros from memory */
+        if (len == 4 && val == 0 && addr < 0x00100000) {
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: SUSPICIOUS zero read from low memory 0x%08x - SCRIPTS may not be loaded\n", addr);
+        }
     }
 }
 
@@ -738,58 +783,42 @@ static void ncr710_reselect(NCR710State *s, NCR710Request *p)
     }
 }
 
-static void ncr710_handle_direct_scsi_command(NCR710State *s)
-{
-    NCR710Request *req = s->current;
-    SCSICommand *cmd;
-
-    if (!req || !req->req) {
-        qemu_log_mask(LOG_UNIMP, "NCR710: Direct SCSI handler called without valid request\n");
-        return;
-    }
-
-    cmd = &req->req->cmd;
-
-    qemu_log_mask(LOG_UNIMP, "NCR710: Direct SCSI command handler for command 0x%02x\n", cmd->buf[0]);
-
-    switch (cmd->buf[0]) {
-    case 0x12: /* INQUIRY */
-        qemu_log_mask(LOG_UNIMP, "NCR710: Handling INQUIRY command directly\n");
-        /* Set up basic INQUIRY response */
-        s->istat |= 0x01; /* DIP - DMA interrupt pending */
-        ncr710_update_irq(s);
-        break;
-
-    case 0x00: /* TEST_UNIT_READY */
-        qemu_log_mask(LOG_UNIMP, "NCR710: Handling TEST_UNIT_READY command directly\n");
-        /* Complete with good status */
-        s->istat |= 0x01; /* DIP - DMA interrupt pending */
-        ncr710_update_irq(s);
-        break;
-
-    default:
-        qemu_log_mask(LOG_UNIMP, "NCR710: Unsupported SCSI command 0x%02x in direct handler\n", cmd->buf[0]);
-        /* Signal error */
-        s->istat |= 0x01; /* DIP - DMA interrupt pending */
-        ncr710_update_irq(s);
-        break;
-    }
-}
 
 static void ncr710_wait_reselect(NCR710State *s)
 {
     NCR710Request *p;
 
     NCR710_DPRINTF("Wait Reselect\n");
+    trace_ncr710_scripts_wait_reselect();
 
+    /* NCR710: Enhanced reselection for kernel driver compatibility */
     QTAILQ_FOREACH(p, &s->queue, next) {
         if (p->pending) {
+            /* Found a pending request - perform reselection */
             ncr710_reselect(s, p);
-            break;
+
+            /* NCR710: Kernel drivers expect immediate reselection interrupt */
+            if (s->sien & SIEN_RSL) {
+                s->sstat0 |= SSTAT0_RSL; /* Reselected */
+                s->istat |= ISTAT_SIP;   /* SCSI Interrupt Pending */
+                ncr710_update_irq(s);
+            }
+
+            /* SCRIPTS should continue from reselection point */
+            s->scripts.running = true;
+            return;
         }
     }
+
+    /* No pending reselection - enter wait state */
     if (s->current == NULL) {
         s->waiting = 1;
+        /* NCR710: Halt SCRIPTS execution until reselection occurs */
+        s->scripts.running = false;
+        s->script_active = 0;
+
+        /* Kernel drivers may poll for reselection - set up for it */
+        s->sstat2 |= SSTAT2_FF3; /* FIFO flags for reselection */
     }
 }
 
@@ -1534,8 +1563,7 @@ static void ncr710_scripts_execute(NCR710State *s)
     int opcode;
     int insn_processed = 0;
 
-    printf("=== NCR710: SCRIPTS execution starting, DSP=0x%08x ===\n", s->dsp);
-    fflush(stdout);
+    trace_ncr710_scripts_start(s->dsp);
     s->script_active = 1;
     s->scripts.running = true;
 
@@ -1548,24 +1576,19 @@ again:
     insn = ncr710_read_memory_32(s, s->dsp);
 
     if (!insn) {
-        qemu_log("NCR710: Empty opcode at DSP=0x%08x\n", s->dsp);
-        printf("=== NCR710: Empty opcode at DSP=0x%08x ===\n", s->dsp);
+        /* Empty opcode - this can happen in uninitialized memory */
+        NCR710_DPRINTF("Empty opcode at DSP=0x%08x\n", s->dsp);
 
-        /* WORKAROUND: If we're getting too many empty opcodes, it means the SCRIPTS
-         * aren't loaded properly. Let's try to handle basic SCSI operations directly. */
-        if (insn_processed > 50) {
-            printf("=== NCR710: Too many empty opcodes (%d), trying direct SCSI handling ===\n", insn_processed);
-
-            /* Try to handle a basic INQUIRY command directly */
-            if (s->select_tag && !s->current) {
-                printf("=== NCR710: Attempting direct SCSI command handling ===\n");
-                ncr710_handle_direct_scsi_command(s);
-                return;
-            }
-
-            /* Stop SCRIPTS execution to prevent infinite loop */
-            printf("=== NCR710: Stopping SCRIPTS execution due to too many empty opcodes ===\n");
+        /* NCR710: If we encounter too many empty opcodes, stop execution
+         * to prevent infinite loops. This indicates SCRIPTS not properly loaded. */
+        if (insn_processed > 10) {
+            NCR710_DPRINTF("Too many empty opcodes (%d), stopping SCRIPTS\n", insn_processed);
+            trace_ncr710_scripts_stop(s->dsp, "too many empty opcodes");
             s->scripts.running = false;
+            s->script_active = 0;
+            s->dstat |= DSTAT_IID; /* Illegal Instruction Detected */
+            s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
+            ncr710_update_irq(s);
             return;
         }
 
@@ -1576,36 +1599,30 @@ again:
     /* Check for obviously invalid opcodes that indicate uninitialized memory */
     if (insn == 0xaaaaaaaa || insn == 0xbbbbbbbb || insn == 0xcccccccc ||
         insn == 0xdddddddd || insn == 0xeeeeeeee || insn == 0xffffffff) {
-        printf("=== NCR710: Invalid opcode 0x%08x at DSP=0x%08x, stopping SCRIPTS ===\n", insn, s->dsp);
-        qemu_log("NCR710: Invalid opcode 0x%08x at DSP=0x%08x, stopping SCRIPTS\n", insn, s->dsp);
+        NCR710_DPRINTF("Invalid opcode 0x%08x at DSP=0x%08x\n", insn, s->dsp);
+        trace_ncr710_scripts_illegal_instruction(s->dsp, insn);
         s->scripts.running = false;
         s->script_active = 0;
-
-        /* Set an interrupt to indicate SCRIPTS stopped */
-        s->dstat |= 0x04; /* IID - Illegal Instruction Detected */
-        s->istat |= 0x01; /* DIP - DMA Interrupt Pending */
+        s->dstat |= DSTAT_IID; /* Illegal Instruction Detected */
+        s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
         ncr710_update_irq(s);
         return;
     }
 
     /* Additional bounds checking for the DSP address */
     if (s->dsp >= 0x20000000) {  /* Above reasonable physical memory */
-        printf("=== NCR710: DSP address 0x%08x too high, stopping SCRIPTS ===\n", s->dsp);
-        qemu_log("NCR710: DSP address 0x%08x too high, stopping SCRIPTS\n", s->dsp);
+        NCR710_DPRINTF("DSP address 0x%08x too high\n", s->dsp);
+        trace_ncr710_scripts_stop(s->dsp, "DSP address too high");
         s->scripts.running = false;
         s->script_active = 0;
-        s->dstat |= 0x04; /* IID - Illegal Instruction Detected */
-        s->istat |= 0x01; /* DIP - DMA Interrupt Pending */
+        s->dstat |= DSTAT_IID; /* Illegal Instruction Detected */
+        s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
         ncr710_update_irq(s);
         return;
     }
     addr = ncr710_read_memory_32(s, s->dsp + 4);
-    qemu_log("NCR710: SCRIPTS dsp=%08x opcode %08x arg %08x\n", s->dsp, insn, addr);
+    trace_ncr710_scripts_execute(s->dsp, insn);
 
-    /* Only log every 100th instruction to reduce verbosity */
-    if (insn_processed % 100 == 1) {
-        printf("=== NCR710: SCRIPTS execute DSP=0x%08x opcode=0x%08x arg=0x%08x (insn %d) ===\n", s->dsp, insn, addr, insn_processed);
-    }
     s->dsps = addr;
     s->dcmd = insn >> 24;
     s->dsp += 8;
@@ -1636,14 +1653,35 @@ again:
         if ((s->sstat2 & PHASE_MASK) != ((insn >> 24) & 7)) {
             NCR710_DPRINTF("Wrong phase got %d expected %d\n",
                     s->sstat2 & PHASE_MASK, (insn >> 24) & 7);
-            printf("=== NCR710: Phase mismatch - current phase %d, expected phase %d ===\n",
-                   s->sstat2 & PHASE_MASK, (insn >> 24) & 7);
+            trace_ncr710_phase_change(s->sstat2 & PHASE_MASK, (insn >> 24) & 7);
+
+            /* NCR710: Phase mismatch handling for kernel compatibility
+             * The kernel driver expects specific interrupt behavior:
+             * - SSTAT0_M_A (phase mismatch) interrupt
+             * - SCRIPTS execution halted
+             * - Proper phase and register state preserved */
+            s->dstat |= DSTAT_IID;  /* Illegal instruction (phase mismatch) */
+            s->istat |= ISTAT_DIP;  /* DMA interrupt pending */
+
+            /* Preserve the current DSP for kernel driver resume */
+            s->dsp -= 8; /* Back up to current instruction */
+
+            /* Generate phase mismatch interrupt */
             ncr710_script_scsi_interrupt(s, SSTAT0_M_A);
+
+            /* NCR710: Halt SCRIPTS execution - kernel will resume */
+            s->scripts.running = false;
+            s->script_active = 0;
+
+            /* Assert REQ to indicate bus phase */
             s->sbcl |= SBCL_REQ;
-            break;
+
+            /* Update interrupt status */
+            ncr710_update_irq(s);
+            return; /* Exit SCRIPTS execution */
         }
         s->dnad = addr;
-        printf("=== NCR710: Processing phase %d, DBC=%d ===\n", s->sstat2 & 0x7, s->dbc);
+        trace_ncr710_scripts_block_move(s->dbc, s->sstat2 & 0x7, addr);
         switch (s->sstat2 & 0x7) {
         case PHASE_DO:
             NCR710_DPRINTF("Data OUT phase, DBC=%d\n", s->dbc);
@@ -1661,14 +1699,15 @@ again:
             break;
         case PHASE_CMD:
             NCR710_DPRINTF("Command phase, DBC=%d\n", s->dbc);
-            printf("=== NCR710: Command phase, DBC=%d ===\n", s->dbc);
             ncr710_do_command(s);
             break;
         case PHASE_ST:
             ncr710_do_status(s);
             break;
         case PHASE_MO:
+            trace_ncr710_scripts_msgout_start(s->dbc);
             ncr710_do_msgout(s);
+            trace_ncr710_scripts_msgout_complete(s->waiting);
             break;
         case PHASE_MI:
             ncr710_do_msgin(s);
@@ -1709,7 +1748,7 @@ again:
                     break;
                 }
                 NCR710_DPRINTF("Selected target %d%s\n",
-                        id, insn & (1 << 24) ? " ATN" : "");
+                        ncr710_idbitstonum(id), insn & (1 << 24) ? " ATN" : "");
                 s->select_tag = id << 8;
                 s->scntl1 |= SCNTL1_CON;
                 if (insn & (1 << 24)) {
@@ -1718,15 +1757,27 @@ again:
                 } else {
                     ncr710_set_phase(s, PHASE_CMD);
                 }
+                /* NCR710: Kernel drivers expect proper interrupt on successful selection */
+                trace_ncr710_scripts_select(ncr710_idbitstonum(id), insn & (1 << 24) ? 1 : 0);
                 break;
             case 1: /* Disconnect */
                 NCR710_DPRINTF("Wait Disconnect\n");
                 s->scntl1 &= ~SCNTL1_CON;
+                /* NCR710: Generate disconnect interrupt for kernel driver */
+                if (s->sien & SIEN_DIS) {
+                    ncr710_script_scsi_interrupt(s, SSTAT0_SGE); /* SCSI Gross Error or appropriate */
+                }
+                trace_ncr710_scripts_disconnect();
                 break;
             case 2: /* Wait Reselect */
+                NCR710_DPRINTF("Wait Reselect\n");
                 if (!ncr710_irq_on_rsl(s)) {
                     ncr710_wait_reselect(s);
+                } else {
+                    /* NCR710: Kernel expects immediate reselection interrupt if enabled */
+                    ncr710_script_scsi_interrupt(s, SSTAT0_RSL);
                 }
+                trace_ncr710_scripts_wait_reselect();
                 break;
             case 3: /* Set */
                 NCR710_DPRINTF("Set%s%s%s%s\n",
@@ -1892,28 +1943,9 @@ again:
                     break;
                 case 1: /* Call */
                     NCR710_DPRINTF("Call 0x%08x\n", addr);
-                    printf("=== NCR710: SCRIPTS Call to 0x%08x ===\n", addr);
-                    /* Handle special case of calling address 0 (SGScriptStartAddress) */
-                    if (addr == 0) {
-                        NCR710_DPRINTF("Call to SGScriptStartAddress (0) - handling data transfer\n");
-                        printf("=== NCR710: Call to SGScriptStartAddress (0) - returning immediately ===\n");
-                        /* This is a scatter-gather data transfer call. For now, let's see if there's
-                         * any active data transfer to handle. If the current phase suggests data transfer,
-                         * handle it directly rather than calling scripts. */
-                        if ((s->sstat2 & PHASE_MASK) == PHASE_DI) {
-                            NCR710_DPRINTF("Data IN phase during SG call - returning immediately\n");
-                            s->dsp = s->temp;  /* Return immediately */
-                        } else if ((s->sstat2 & PHASE_MASK) == PHASE_DO) {
-                            NCR710_DPRINTF("Data OUT phase during SG call - returning immediately\n");
-                            s->dsp = s->temp;  /* Return immediately */
-                        } else {
-                            NCR710_DPRINTF("No data phase during SG call - returning immediately\n");
-                            s->dsp = s->temp;  /* Return immediately */
-                        }
-                    } else {
-                        s->temp = s->dsp;
-                        s->dsp = addr;
-                    }
+                    trace_ncr710_scripts_call(s->dsp - 8, addr);
+                    s->temp = s->dsp;
+                    s->dsp = addr;
                     break;
                 case 2: /* Return */
                     NCR710_DPRINTF("Return to 0x%08x\n", s->temp);
@@ -1921,23 +1953,23 @@ again:
                     break;
                 case 3: /* Interrupt */
                     NCR710_DPRINTF("Interrupt 0x%08x\n", s->dsps);
+                    trace_ncr710_scripts_interrupt(insn & 0xffffff, s->dsps);
 
-                    /* HACK: Map unrecognized interrupt codes to A_GOOD_STATUS_AFTER_STATUS
-                     * The kernel's SCRIPTS might be using different interrupt codes than
-                     * what the 53c700 driver expects. For now, treat unexpected interrupts
-                     * as successful command completion. */
-                    if (s->dsps == 0x7348f84d) {
-                        printf("=== NCR710: Mapping unrecognized interrupt 0x%08x to A_GOOD_STATUS_AFTER_STATUS (0x401) ===\n", s->dsps);
-                        s->dsps = 0x401; /* A_GOOD_STATUS_AFTER_STATUS */
-                    } else {
-                        printf("=== NCR710: SCRIPTS Interrupt 0x%08x ===\n", s->dsps);
-                    }
+                    /* NCR710: Kernel driver compatibility for SCRIPTS interrupts */
+                    s->scripts.running = false;
+                    s->script_active = 0;
 
                     if ((insn & (1 << 20)) != 0) {
+                        /* Wait for SIGP (Signal Process) - used by kernel drivers
+                         * for synchronization between SCRIPTS and driver */
+                        s->dstat |= DSTAT_SIR; /* SCRIPTS Interrupt Received */
+                        s->istat |= ISTAT_DIP; /* DMA Interrupt Pending */
                         ncr710_update_irq(s);
                     } else {
+                        /* Standard SCRIPTS interrupt */
                         ncr710_script_dma_interrupt(s, DSTAT_SIR);
                     }
+                    return; /* Exit SCRIPTS execution for kernel to handle */
                     break;
                 default:
                     NCR710_DPRINTF("Illegal transfer control\n");
@@ -1952,7 +1984,7 @@ again:
 
     case 3:
         if ((insn & (1 << 29)) == 0) {
-            /* Memory move */
+            /* Memory move - NCR710 supports this */
             uint32_t dest;
             /* The docs imply the destination address is loaded into
                the TEMP register. However the Linux drivers rely on
@@ -1961,49 +1993,40 @@ again:
             s->dsp += 4;
             ncr710_memcpy(s, dest, addr, insn & 0xffffff);
         } else {
-            uint8_t data[7];
-            int reg;
-            int n;
-            int i;
-
-            if (insn & (1 << 28)) {
-                addr = s->dsa + sextract32(addr, 0, 24);
-            }
-            n = (insn & 7);
-            reg = (insn >> 16) & 0xff;
-            if (insn & (1 << 24)) {
-                ncr710_read_memory(s, addr, data, n);
-                NCR710_DPRINTF("Load reg 0x%x size %d addr 0x%08x = %08x\n", reg, n,
-                        addr, *(int *)data);
-                for (i = 0; i < n; i++) {
-                    ncr710_reg_writeb(s, reg + i, data[i]);
-                }
-            } else {
-                NCR710_DPRINTF("Store reg 0x%x size %d addr 0x%08x\n", reg, n, addr);
-                for (i = 0; i < n; i++) {
-                    data[i] = ncr710_reg_readb(s, reg + i);
-                }
-                ncr710_write_memory(s, addr, data, n);
-            }
+            /* NCR710 DIFFERENCE: Load/Store instructions are NOT supported in NCR710.
+             * These were added in LSI53C895A. NCR710 only supports the basic instruction set.
+             * According to the manual, NCR710 instruction set includes:
+             * - Block Move, I/O, Read/Write, Transfer Control, and Memory Move instructions
+             * But NOT Load and Store instructions which were added in later LSI chips.
+             */
+            NCR710_DPRINTF("Load/Store instruction not supported in NCR710 (LSI extension)\n");
+            qemu_log_mask(LOG_GUEST_ERROR,
+                         "NCR710: Load/Store instruction 0x%08x not supported (LSI53C895A extension)\n",
+                         insn);
+            ncr710_script_dma_interrupt(s, DSTAT_IID); /* Illegal Instruction Detected */
         }
     }
 
     if (insn_processed > 10000 && !s->waiting) {
-        /* Some windows drivers make the device spin waiting for a memory
+        /* NCR710: Some drivers make the device spin waiting for a memory
            location to change. If we have been executed a lot of code then
            assume this is the case and force an unexpected device disconnect.
            This is apparently sufficient to beat the drivers into submission. */
         if (!(s->sien & SIEN_UDC))
-            fprintf(stderr, "NCR710: inf. loop with UDC masked\n");
+            qemu_log_mask(LOG_GUEST_ERROR, "NCR710: infinite loop with UDC masked\n");
         ncr710_script_scsi_interrupt(s, SSTAT0_UDC);
         ncr710_disconnect(s);
     } else if (s->script_active && !s->waiting) {
+        trace_ncr710_scripts_continue("normal flow", s->waiting, s->script_active);
         if (s->dcntl & DCNTL_SSM) {
             ncr710_script_dma_interrupt(s, DSTAT_SSI);
         } else {
             goto again;
         }
+    } else {
+        trace_ncr710_scripts_halt("waiting or not active", s->waiting, s->script_active);
     }
+    trace_ncr710_scripts_stop(s->dsp, "execution completed");
     NCR710_DPRINTF("SCRIPTS execution stopped\n");
 }
 
@@ -2031,7 +2054,7 @@ static void ncr710_dma_transfer(NCR710State *s)
 }
 
 /* SCSI command initiation - TODO: integrate with SCRIPTS processor */
-#if 0
+
 static void ncr710_scsi_command_start(NCR710State *s, uint8_t target, uint8_t lun, uint8_t *cdb, uint32_t cdb_len)
 {
     SCSIDevice *d;
@@ -2067,7 +2090,6 @@ static void ncr710_scsi_command_start(NCR710State *s, uint8_t target, uint8_t lu
     scsi_req_enqueue(req);
     qemu_log("NCR710: SCSI command enqueued successfully\n");
 }
-#endif
 
 static void ncr710_request_cancelled(SCSIRequest *req)
 {
@@ -2666,13 +2688,17 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         s->dsp &= 0x00ffffff;
         s->dsp |= val << 24;
         /* Enhanced handling from second implementation */
-        printf("=== NCR710: DSP register write complete: DSP=0x%08x ===\n", s->dsp);
-        fflush(stdout);
-        if (!is_700_mode && (s->dmode & DMODE_MAN) == 0) {
+        trace_ncr710_dsp_write_complete(s->dsp, is_700_mode, s->dmode);
+        if (!is_700_mode) {
+            /* SCRIPTS always starts on DSP write in NCR710 mode
+             * DMODE_MAN only affects DMA auto-start, not SCRIPTS execution */
+            trace_ncr710_scripts_autostart(s->dsp);
             s->waiting = 0;
             s->scripts.running = true;
             s->scripts.pc = s->dsp;
             ncr710_scripts_execute(s);
+        } else {
+            trace_ncr710_scripts_manual_mode(s->dsp);
         }
         break;
 
@@ -2731,10 +2757,15 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
             /* Normal 710 mode with enhanced handling */
             s->dcntl = val & ~(DCNTL_PFF | DCNTL_STD);
             if ((val & DCNTL_STD) && (s->dmode & DMODE_MAN) != 0) {
+                trace_ncr710_dcntl_std_triggered(s->dsp);
+                s->waiting = 0;
+                s->scripts.running = true;
+                s->scripts.pc = s->dsp;
                 ncr710_scripts_execute(s);
             }
             /* From second implementation */
             if (val & DCNTL_STD) {
+                trace_ncr710_dma_transfer(s->dsp, 0);
                 ncr710_dma_transfer(s);
             }
         }
