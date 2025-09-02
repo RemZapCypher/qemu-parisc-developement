@@ -234,8 +234,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SysBusNCR710State, SYSBUS_NCR710_SCSI)
 /* Function prototypes for external interface */
 DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq);
 DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq);
-
-/* Function to check compatibility mode - needed by LASI wrapper */
 bool ncr710_is_700_mode(NCR710State *s);
+
 
 #endif /* HW_SCSI_NCR710_H */
