@@ -362,8 +362,8 @@ scsi_generic_ioctl_sgio_command(uint8_t cmd, uint32_t timeout) "generic ioctl sg
 scsi_generic_ioctl_sgio_done(uint8_t cmd, int ret, uint8_t status, uint8_t host_status) "generic ioctl sgio: cmd=0x%x ret=%d status=0x%x host_status=0x%x"
 
 # ncr53c710.c
-ncr710_reg_read(uint32_t addr, uint32_t val) "addr 0x%02x = 0x%02x"
-ncr710_reg_write(uint32_t addr, uint32_t val) "addr 0x%02x = 0x%02x"
+ncr710_reg_read(uint32_t addr, const char *name, uint32_t val) "addr 0x%02x (%s) = 0x%02x"
+ncr710_reg_write(uint32_t addr, const char *name, uint32_t val) "addr 0x%02x (%s) = 0x%02x"
 ncr710_reg_read_unhandled(uint32_t addr, unsigned size) "unhandled read addr 0x%02x size %u"
 ncr710_scripts_interrupt(uint32_t vector, uint32_t dsps) "interrupt vector=0x%08x dsps=0x%08x"
 ncr710_scripts_wait_reselect(void) "SCRIPTS wait reselect"

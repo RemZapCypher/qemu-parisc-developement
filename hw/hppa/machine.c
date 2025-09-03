@@ -375,7 +375,7 @@ static void machine_HP_common_init_tail(MachineState *machine, PCIBus *pci_bus,
         } else {
                 dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
                 lsi53c8xx_handle_legacy_cmdline(dev);
-            }
+        }
     }
 
     /* Graphics setup. */

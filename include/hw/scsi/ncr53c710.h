@@ -29,12 +29,12 @@
 #define NCR710_DPRINTF(fmt, ...) \
     do { \
         if (NCR710_DEBUG) { \
-            fprintf(stderr, "ncr710: " fmt, ## __VA_ARGS__); \
+            qemu_log("ncr710: " fmt, ## __VA_ARGS__); \
         } \
     } while (0)
 
 #ifndef NCR710_DEBUG
-#define NCR710_DEBUG 0
+#define NCR710_DEBUG 1
 #endif
 
 /* Constants for FIFO sizes */
