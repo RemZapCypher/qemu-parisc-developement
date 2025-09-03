@@ -49,7 +49,7 @@ typedef enum {
     SCSI_PHASE_STATUS   = 3,
     SCSI_PHASE_MSG_OUT  = 6,
     SCSI_PHASE_MSG_IN   = 7,
-};
+} NCR710_SCSI_Phase;
 
 typedef struct {
     uint32_t count:24;
