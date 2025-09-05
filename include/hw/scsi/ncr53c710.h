@@ -29,7 +29,7 @@
 #define NCR710_DPRINTF(fmt, ...) \
     do { \
         if (NCR710_DEBUG) { \
-            qemu_log("ncr710: " fmt, ## __VA_ARGS__); \
+            fprintf(stderr,"ncr710: " fmt, ## __VA_ARGS__); \
         } \
     } while (0)
 
