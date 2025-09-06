@@ -128,13 +128,18 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
         /* Check current compatibility mode of NCR710 */
         if (s->ncr710_dev) {
             SysBusNCR710State *ncr710_state = SYSBUS_NCR710_SCSI(s->ncr710_dev);
-            if (ncr710_is_700_mode(&ncr710_state->ncr710)) {
+            bool is_700_mode = ncr710_is_700_mode(&ncr710_state->ncr710);
+            qemu_log(" -> Checking compatibility mode: %s", is_700_mode ? "53C700" : "53C710");
+            if (is_700_mode) {
                 val = (s->hw_type << 24) | LASI_700_SVERSION;
+                qemu_log(" -> Returning 53C700 device ID");
             } else {
                 val = (s->hw_type << 24) | LASI_710_SVERSION;
+                qemu_log(" -> Returning 53C710 device ID");
             }
         } else {
             val = (s->hw_type << 24) | s->sversion;
+            qemu_log(" -> Using default device ID");
         }
         
         qemu_log(" -> Device ID = 0x%08x (mode: %s, PA-RISC BE format)\n", 
