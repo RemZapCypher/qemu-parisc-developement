@@ -41,38 +41,81 @@
 #define PARISC_DEVICE_ID_OFF    0x00    /* HW type, HVERSION, SVERSION */
 #define PARISC_DEVICE_CONFIG_OFF 0x04   /* Configuration data */
 
+/* Big Endian -> Little Endian */
+#define SWAP16(x)   (((uint16_t)(x) << 8) | (((uint16_t)(x)) >> 8))
+#define SWAP32(x)   (((uint32_t)(x) << 24) | \
+                     (((uint32_t)(x) & 0xFF00) << 8) | \
+                     (((uint32_t)(x) & 0xFF0000) >> 8) | \
+                     (((uint32_t)(x)) >> 24))
+
+#define PARISC_TO_NCR710_16(x)  SWAP16(x)
+#define PARISC_TO_NCR710_32(x)  SWAP32(x)
+#define NCR710_TO_PARISC_16(x)  SWAP16(x)
+#define NCR710_TO_PARISC_32(x)  SWAP32(x)
+
 static void lasi_ncr710_mem_write(void *opaque, hwaddr addr,
                                  uint64_t val, unsigned size)
 {
     LasiNCR710State *s = opaque;
 
-    qemu_log("LASI NCR710: Write addr=0x%03x val=0x%08x size=%d\n", (int)addr, (int)val, size);
+    qemu_log("LASI NCR710: Write addr=0x%03x val=0x%08x size=%d\n",
+             (int)addr, (int)val, size);
+
+    if (addr == PARISC_DEVICE_ID_OFF || addr == 0x08 || addr == 0x0C) {
+        qemu_log("LASI NCR710: Write to identification register ignored\n");
+        return;
+    }
 
     /* Forward NCR710 SCSI register writes to the NCR710 device */
     if (s->ncr710_dev) {
         MemoryRegion *ncr710_mem = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ncr710_dev), 0);
         if (ncr710_mem && addr < memory_region_size(ncr710_mem)) {
-            /* NCR710 expects little-endian, so always use MO_LE regardless of input endianness */
+            uint64_t converted_val = val;
+            switch (size) {
+            case 1:
+                /* No conversion needed for bytes */
+                break;
+            case 2:
+                converted_val = PARISC_TO_NCR710_16(val);
+                break;
+            case 4:
+                converted_val = PARISC_TO_NCR710_32(val);
+                break;
+            default:
+                qemu_log("LASI NCR710: Unsupported write size %d\n", size);
+                return;
+            }
+
+            qemu_log("LASI NCR710: Endian convert write: addr=0x%03x BE=0x%08x -> LE=0x%08x size=%d\n",
+                     (int)addr, (int)val, (int)converted_val, size);
+
             MemOp op = size_memop(size) | MO_LE;
-            memory_region_dispatch_write(ncr710_mem, addr, val, op, MEMTXATTRS_UNSPECIFIED);
-            qemu_log("LASI NCR710: Forwarded write to NCR710 (converted to LE)\n");
+            MemTxResult result = memory_region_dispatch_write(ncr710_mem, addr, converted_val, op, MEMTXATTRS_UNSPECIFIED);
+
+            if (result == MEMTX_OK) {
+                qemu_log("LASI NCR710: Successfully forwarded converted write to NCR710\n");
+            } else {
+                qemu_log("LASI NCR710: NCR710 write FAILED: result=%d\n", result);
+            }
             return;
         }
     }
-    qemu_log("LASI NCR710: Write to identification register ignored\n");
+
+    qemu_log("LASI NCR710: Write failed - no NCR710 device or invalid address\n");
 }
 
-static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
-                                    unsigned size)
+static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr, unsigned size)
 {
     LasiNCR710State *s = LASI_NCR710(opaque);
     uint64_t val = 0;
-    qemu_log("LASI NCR710: DISCOVERY READ addr=0x%03x size=%d", (int)addr, size);
+    qemu_log("LASI NCR710: Read addr=0x%03x size=%d", (int)addr, size);
 
     if (addr == PARISC_DEVICE_ID_OFF) {
         if (s->ncr710_dev) {
             SysBusNCR710State *ncr710_state = SYSBUS_NCR710_SCSI(s->ncr710_dev);
-            if (ncr710_is_700_mode(&ncr710_state->ncr710)) {
+            /* Compatiablity bool */
+            bool is_700_mode = ncr710_is_700_mode(&ncr710_state->ncr710);
+            if (is_700_mode) {
                 val = (s->hw_type << 24) | LASI_700_SVERSION;
             } else {
                 val = (s->hw_type << 24) | LASI_710_SVERSION;
@@ -80,13 +123,11 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
         } else {
             val = (s->hw_type << 24) | s->sversion;
         }
-        
-        qemu_log("LASI NCR710: Device ID read -> 0x%08x (mode: %s)\n", 
-                 (uint32_t)val, 
-                 (val & 0xFFFF) == LASI_700_SVERSION ? "700" : "710");
+
+        qemu_log(" -> Device ID = 0x%08x\n", (uint32_t)val);
         return val;
     }
-    
+
     if (addr == 0x08) {
         val = s->hversion;
         qemu_log(" -> HVersion = 0x%02x\n", (int)val);
@@ -94,28 +135,45 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
     }
 
     if (addr == 0x0C) {
-        val = 0x53434E52;  /* 'SCNR' - identify as SCSI NCR device */
+        val = 0x53434E52;  /* 'SCNR' - big endian format for PA-RISC */
         qemu_log(" -> SCSI Identification = 0x%08x\n", (int)val);
         return val;
     }
 
-    /* Forward ALL other accesses to NCR710 (including SCID at offset 0x04) */
     if (s->ncr710_dev) {
         MemoryRegion *ncr710_mem = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ncr710_dev), 0);
         if (ncr710_mem && addr < memory_region_size(ncr710_mem)) {
-            uint64_t read_val = 0;
-            /* NCR710 expects little-endian, so always use MO_LE regardless of output endianness */
+            uint64_t ncr710_val = 0;
+            uint64_t converted_val = 0;
+
             MemOp op = size_memop(size) | MO_LE;
-            MemTxResult result = memory_region_dispatch_read(ncr710_mem, addr, &read_val, op, MEMTXATTRS_UNSPECIFIED);
+            MemTxResult result = memory_region_dispatch_read(ncr710_mem, addr, &ncr710_val, op, MEMTXATTRS_UNSPECIFIED);
+
             if (result == MEMTX_OK) {
-                qemu_log(" -> NCR710 Register = 0x%x (from LE)\n", (int)read_val);
-                return read_val;
+                switch (size) {
+                case 1:
+                    converted_val = ncr710_val;
+                    break;
+                case 2:
+                    converted_val = NCR710_TO_PARISC_16(ncr710_val);
+                    break;
+                case 4:
+                    converted_val = NCR710_TO_PARISC_32(ncr710_val);
+                    break;
+                default:
+                    qemu_log(" -> Unsupported read size %d\n", size);
+                    return 0;
+                }
+
+                qemu_log(" -> NCR710 endian convert read: LE=0x%08x -> BE=0x%08x\n", 
+                         (uint32_t)ncr710_val, (uint32_t)converted_val);
+                return converted_val;
+            } else {
+                qemu_log(" -> NCR710 read FAILED: result=%d\n", result);
             }
         }
     }
 
-    /* Other registers - return 0 for now */
-    val = 0;
     qemu_log(" -> Default = 0x%x\n", (int)val);
     return val;
 }
@@ -123,7 +181,7 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
 static const MemoryRegionOps lasi_ncr710_mem_ops = {
     .read = lasi_ncr710_mem_read,
     .write = lasi_ncr710_mem_write,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,  /* PA-RISC is big endian */
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,
@@ -144,18 +202,17 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     LasiNCR710State *s = LASI_NCR710(dev);
     SysBusDevice *sysbus_self = SYS_BUS_DEVICE(dev);
 
-    qemu_log("LASI NCR710: Realizing device\n");
+    qemu_log("LASI NCR710: Realizing device with endianness conversion support\n");
 
     s->hw_type = HPHW_FIO;
     s->sversion = LASI_710_SVERSION;
     s->hversion = 0x3d;
-
     qemu_log("LASI NCR710: Device ID - hw_type=%d (HPHW_FIO), sversion=0x%04x, hversion=0x%02x\n",
              s->hw_type, s->sversion, s->hversion);
 
     memory_region_init_io(&s->mmio, OBJECT(s), &lasi_ncr710_mem_ops, s,
                          "lasi-ncr710", LASI_SCSI_NCR710_BASE);
-
+    sysbus_init_mmio(sysbus_self, &s->mmio); /* Not sure if this is correct, seems to work */
     sysbus_init_irq(sysbus_self, &s->irq);
 
     qemu_log("LASI NCR710: Device realized successfully\n");
@@ -168,7 +225,6 @@ DeviceState *lasi_ncr710_init(MemoryRegion *addr_space, hwaddr hpa, qemu_irq irq
     DeviceState *ncr710_dev;
     SysBusDevice *ncr710_sysbus;
 
-    qemu_log("LASI NCR710: Initializing at HPA 0x%08x\n", (uint32_t)hpa);
     dev = qdev_new(TYPE_LASI_NCR710);
     s = LASI_NCR710(dev);
     s->irq = irq;
@@ -179,6 +235,7 @@ DeviceState *lasi_ncr710_init(MemoryRegion *addr_space, hwaddr hpa, qemu_irq irq
     s->ncr710_dev = ncr710_dev;
     memory_region_add_subregion(addr_space, hpa,
                                sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+    sysbus_mmio_map(ncr710_sysbus, 0, hpa + NCR710_REG_SIZE);
     sysbus_connect_irq(ncr710_sysbus, 0, irq);
     qemu_log("LASI NCR710: Initialization complete\n");
     return dev;
@@ -187,9 +244,6 @@ DeviceState *lasi_ncr710_init(MemoryRegion *addr_space, hwaddr hpa, qemu_irq irq
 void lasi_ncr710_handle_legacy_cmdline(DeviceState *lasi_dev)
 {
     LasiNCR710State *s = LASI_NCR710(lasi_dev);
-
-    qemu_log("LASI NCR710: Handling legacy SCSI command line\n");
-
     if (!s->ncr710_dev) {
         qemu_log("LASI NCR710: No NCR710 device found\n");
         return;
@@ -207,18 +261,14 @@ void lasi_ncr710_handle_legacy_cmdline(DeviceState *lasi_dev)
 static void lasi_ncr710_reset(DeviceState *dev)
 {
     LasiNCR710State *s = LASI_NCR710(dev);
-
     qemu_log("LASI NCR710: Device reset called\n");
-
     if (s->ncr710_dev) {
         qemu_log("LASI NCR710: Resetting NCR710 device\n");
         device_cold_reset(s->ncr710_dev);
     }
-
     s->hw_type = HPHW_FIO;
     s->sversion = LASI_710_SVERSION;
     s->hversion = LASI_710_HVERSION;
-
     qemu_log("LASI NCR710: Device reset completed\n");
 }
 
