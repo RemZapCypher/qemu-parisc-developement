@@ -98,8 +98,6 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
         return val;
     }
 
-    /* Forward ALL other accesses to NCR710 (including SCID at offset 0x04) */
-    /* Forward ALL other accesses to NCR710 (including SCID at offset 0x04) */
     if (s->ncr710_dev) {
         MemoryRegion *ncr710_mem = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ncr710_dev), 0);
         if (ncr710_mem && addr < memory_region_size(ncr710_mem)) {

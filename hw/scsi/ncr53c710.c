@@ -1732,7 +1732,6 @@ again:
                     ncr710_bad_selection(s, id);
                     break;
                 }
-                qemu_log("NCR710_DEBUG: Target %d FOUND during SELECT - setting up connection\n", ncr710_idbitstonum(id));
                 NCR710_DPRINTF("Selected target %d%s\n",
                         id, insn & (1 << 24) ? " ATN" : "");
                 /* ??? Linux drivers compain when this is set.  Maybe
@@ -1876,8 +1875,6 @@ again:
         }
         break;
 
-    // Around line 1765, in the Transfer Control instruction handler, replace the switch statement:
-
     case 2: /* Transfer Control.  */
         {
             int cond;
@@ -1934,32 +1931,10 @@ again:
                 case 3: /* Interrupt */
                     NCR710_DPRINTF("Interrupt 0x%08x\n", s->dsps);
                     if ((insn & (1 << 20)) != 0) {
-                        // This is an interrupt with continue bit - DON'T stop execution
-                        qemu_log("NCR710: SCRIPTS interrupt with continue bit - vector=0x%08x\n", s->dsps);
-                        s->dstat |= DSTAT_SIR;
-                        s->istat |= ISTAT_DIP;
                         ncr710_update_irq(s);
-                        // Continue execution - don't call ncr710_script_dma_interrupt
                     } else {
-                        qemu_log("NCR710: SCRIPTS interrupt with halt - vector=0x%08x\n", s->dsps);
                         ncr710_script_dma_interrupt(s, DSTAT_SIR);
                     }
-                    break;
-                case 4: /* Load/Store Operations */
-                    NCR710_DPRINTF("Load/Store instruction - opcode 4\n");
-                    ncr710_handle_load_store(s, insn, addr);
-                    break;
-                case 5: /* Memory Move Block / Advanced Load/Store */
-                    NCR710_DPRINTF("Memory Move Block - opcode 5\n");
-                    ncr710_handle_memory_move_block(s, insn, addr);
-                    break;
-                case 6: /* Reserved */
-                    NCR710_DPRINTF("Reserved transfer control opcode 6\n");
-                    ncr710_script_dma_interrupt(s, DSTAT_IID);
-                    break;
-                case 7: /* Reserved */
-                    NCR710_DPRINTF("Reserved transfer control opcode 7\n");
-                    ncr710_script_dma_interrupt(s, DSTAT_IID);
                     break;
                 default:
                     NCR710_DPRINTF("Illegal transfer control\n");
@@ -2028,12 +2003,6 @@ again:
     }
     NCR710_DPRINTF("SCRIPTS execution stopped\n");
 }
-
-
-
-/* SCSI command initiation - TODO: integrate with SCRIPTS processor */
-
-
 
 static void ncr710_request_cancelled(SCSIRequest *req)
 {
