@@ -1,11 +1,11 @@
 /*
- * NCR710 SCSI I/O Processor
+ * LASI NCR53C710 SCSI Host Adapter
  *
  * Copyright (c) 2025 Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
  *
- * NCR710 SCSI I/O Processor implementation
+ * LASI wrapper for NCR53C710 SCSI I/O Processor
  * Based on the NCR53C710 Technical Manual Version 3.2, December 2000
- *
+ * and PA-RISC LASI chipset documentation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +25,14 @@
 #define TYPE_LASI_NCR710 "lasi-ncr710"
 OBJECT_DECLARE_SIMPLE_TYPE(LasiNCR710State, LASI_NCR710)
 
+/* LASI-specific constants */
+#define LASI_SCSI_RESET         0x000   /* SCSI Reset Register */
+#define LASI_SCSI_NCR710_BASE   0x100   /* NCR53C710 registers start here */
+
+/* PA-RISC device identification register offsets */
+#define PARISC_DEVICE_ID_OFF    0x00    /* HW type, HVERSION, SVERSION */
+#define PARISC_DEVICE_CONFIG_OFF 0x04   /* Configuration data */
+
 /* LASI NCR53C710 state */
 struct LasiNCR710State {
     SysBusDevice parent_obj;
@@ -32,12 +40,16 @@ struct LasiNCR710State {
     MemoryRegion mmio;              /* Memory region for LASI SCSI interface */
     qemu_irq irq;                   /* IRQ line to LASI */
 
-    DeviceState *ncr710_dev;
+    DeviceState *ncr710_dev;        /* Pointer to NCR53C710 device */
+    NCR710State *ncr710;     /* Direct access to NCR710 state */
 
     /* PA-RISC device identification */
-    uint32_t hw_type;
-    uint32_t sversion;
-    uint32_t hversion;
+    uint32_t hw_type;               /* Hardware type (HPHW_FIO) */
+    uint32_t sversion;              /* Software version */
+    uint32_t hversion;              /* Hardware version */
+    
+    /* Endianness conversion flags */
+    bool big_endian;                /* True if system is big endian (PA-RISC) */
 };
 
 /* Create and initialize a LASI NCR710 device */
