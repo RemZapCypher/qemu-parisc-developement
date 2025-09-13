@@ -23,14 +23,14 @@
 #include "exec/memory.h"
 #include "hw/irq.h"
 
-/* FIFO configuration */
-/* NCR53C710 has 8-byte SCSI FIFO and 64-byte DMA FIFO */
-#define NCR710_SCSI_FIFO_SIZE   8
-#define NCR710_DMA_FIFO_SIZE    64
-#define NCR710_FIFO_DEPTH       16  /* General FIFO depth for other operations */
-#define NCR710_FIFO_FULL        0x01
-#define NCR710_FIFO_EMPTY       0x02
+#define TYPE_NCR710_SCSI "ncr710-scsi"
+#define TYPE_SYSBUS_NCR710_SCSI "sysbus-ncr710-scsi"
 
+// #define TYPE_NCR53C710 "ncr53c710"
+// #define TYPE_SYSBUS_NCR710_SCSI "ncr53c710"
+// #define SYSBUS_NCR710_SCSI(obj) \
+//     OBJECT_CHECK(SysBusNCR710State, (obj), TYPE_SYSBUS_NCR710_SCSI)
+// OBJECT_DECLARE_SIMPLE_TYPE(NCR710State, NCR53C710)
 
 #define DEBUG_NCR710
 #define DEBUG_NCR710_REG
@@ -49,7 +49,7 @@
 #define NCR710_DPRINTF(fmt, ...) do {} while(0)
 #endif
 
-/* Define register IDs */
+/* NCR710 - Little Endian register Ordering */
 #define NCR710_SCNTL0_REG       0x00    /* SCSI Control Zero */
 #define NCR710_SCNTL1_REG       0x01    /* SCSI Control One */
 #define NCR710_SDID_REG         0x02    /* SCSI Destination ID */
@@ -95,12 +95,8 @@
 /* NCR710 register size */
 #define NCR710_REG_SIZE         0x100
 
-/* Other constants */
-#define NCR710_BUF_SIZE         4096
-#define NCR710_HOST_ID          7
-#define NCR710_DEFAULT_HOST_ID  7
-#define NCR710_MAX_MSGIN_LEN    8
-#define NCR710_TAG_VALID        (1 << 16)
+/* Alias names for backward compatibility */
+#define NCR710_REVISION_2       0x02
 
 /* SCSI phases */
 #define PHASE_DO   0  /* Data out phase */
@@ -111,16 +107,14 @@
 #define PHASE_MI   7  /* Message in phase */
 #define PHASE_MASK 7  /* Mask for phase bits */
 
-/* Alias names for backward compatibility */
-#define PHASE_CMD  PHASE_CO  /* Command phase alias */
-#define PHASE_ST   PHASE_SI  /* Status phase alias */
-#define NCR710_REVISION_2       0x02
 
-#define TYPE_NCR53C710 "ncr53c710"
-#define TYPE_SYSBUS_NCR710_SCSI "ncr53c710"
-#define SYSBUS_NCR710_SCSI(obj) \
-    OBJECT_CHECK(SysBusNCR710State, (obj), TYPE_SYSBUS_NCR710_SCSI)
-OBJECT_DECLARE_SIMPLE_TYPE(NCR710State, NCR53C710)
+/* Other constants */
+#define NCR710_BUF_SIZE         4096
+#define NCR710_HOST_ID          7
+#define NCR710_MAX_MSGIN_LEN    8
+
+#define NCR710_DMA_FIFO_SIZE    64
+#define NCR710_SCSI_FIFO_SIZE   8
 
 /* DMA FIFO structure - 64 bytes with parity */
 typedef struct {
@@ -140,13 +134,19 @@ typedef struct {
 
 /* Combined FIFO structure for NCR53C710 */
 typedef struct {
-    NCR710_DMA_FIFO dma;                    /* DMA FIFO */
-    NCR710_SCSI_FIFO scsi;                  /* SCSI FIFO */
-    uint8_t status;                         /* FIFO status flags */
+    NCR710_DMA_FIFO dma;
+    NCR710_SCSI_FIFO scsi;
+    uint8_t status;
 } NCR710FIFO;
 
 /* Forward declaration */
 typedef struct NCR710Request NCR710Request;
+
+/* Scripts state structure */
+typedef struct {
+    bool running;          /* Scripts running flag */
+    uint32_t pc;           /* Scripts program counter */
+} NCR710Scripts;
 
 /* Request structure */
 struct NCR710Request {
@@ -220,20 +220,20 @@ struct NCR710State {
     /* FIFO */
     NCR710_DMA_FIFO dma_fifo;   /* Changed from NCR710FIFO fifo */
     NCR710_SCSI_FIFO scsi_fifo;
-    
+
     /* Current SCSI command state */
     NCR710Request *current;    /* Changed from current_req */
     uint8_t status;
     uint8_t msg[NCR710_MAX_MSGIN_LEN];
     uint8_t msg_len;
     uint8_t msg_action;
-    int carry;                 /* Added */
-    bool script_active;        /* Added */
-    int waiting;               /* Added */
-    bool mode_700;             /* Added - True for 700 mode, false for 710 mode */
-    int dma_pending;           /* Added */
-    uint8_t command_complete;  /* Added */
-    
+    int carry;
+    bool script_active;
+    int waiting;
+    bool mode_700;             /* True for 700 mode, false for 710 mode */
+    int dma_pending;
+    uint8_t command_complete;
+
     /* Additional required fields */
     uint32_t select_tag;       /* Select tag for SCSI device selection */
     uint8_t current_lun;       /* Current logical unit number */
@@ -242,16 +242,9 @@ struct NCR710State {
     bool tolerant_enabled;     /* Tolerant mode enabled flag */
     bool differential_mode;    /* Differential mode flag */
     bool cache_line_burst;     /* Cache line burst flag */
-    
-    /* Timers */
-    QEMUTimer *selection_timer; /* Selection timer */
-    QEMUTimer *watchdog_timer;  /* Watchdog timer */
-    
+
     /* Scripts state */
-    struct {
-        bool running;          /* Scripts running flag */
-        uint32_t pc;           /* Scripts program counter */
-    } scripts;
+    NCR710Scripts scripts;
 };
 
 /* Define SysBusNCR710State */
@@ -266,52 +259,20 @@ typedef struct SysBusNCR710State {
 /* Define register size */
 #define NCR710_REG_SIZE         0x100
 
-/* Function prototypes */
-void ncr710_init(DeviceState *dev);
-void ncr710_reset(DeviceState *dev);
-uint64_t ncr710_mmio_read(void *opaque, hwaddr addr, unsigned size);
-void ncr710_mmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
-void ncr710_irq_raise(NCR710State *s);
-void ncr710_irq_lower(NCR710State *s);
-
-/* Device creation functions */
-DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq);
-DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq);
-
-/* Mode setting functions */
-bool ncr710_is_700_mode(NCR710State *s);
-void ncr710_set_700_mode(NCR710State *s, bool mode_700);
-
-/* SCSI callbacks */
-void ncr710_request_cancelled(SCSIRequest *req);
-void ncr710_command_complete(SCSIRequest *req, size_t resid);
-void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
-
-/* SCSI bus helper */
 static inline NCR710State *ncr710_from_scsi_bus(SCSIBus *bus)
 {
     return container_of(bus, NCR710State, bus);
 }
 
-/* SysBus helper */
 static inline SysBusNCR710State *sysbus_from_ncr710(NCR710State *s)
 {
     return container_of(s, SysBusNCR710State, ncr710);
 }
 
-/* FIFO operations */
-int ncr710_fifo_push(NCR710State *s, uint8_t data, uint8_t parity);
-int ncr710_fifo_pop(NCR710State *s, uint8_t *data, uint8_t *parity);
-void ncr710_fifo_reset(NCR710State *s);
-uint8_t ncr710_calculate_parity(uint8_t data, bool odd_parity);
-
-/* Additional helper functions */
-uint8_t ncr710_generate_scsi_parity(NCR710State *s, uint8_t data);
-void ncr710_update_compatibility_mode(NCR710State *s, bool mode_700);
-void ncr710_arbitrate_bus(NCR710State *s);
-void ncr710_internal_scsi_bus_reset(NCR710State *s);
-void ncr710_scripts_execute(NCR710State *s);
-uint32_t ncr710_dma_fifo_drain_to_memory(NCR710State *s, uint32_t addr, int count);
-const char *ncr710_reg_name(int offset);
+/* Function prototypes */
+DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq);
+DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq);
+bool ncr710_is_700_mode(NCR710State *s);
+void ncr710_set_700_mode(NCR710State *s, bool mode_700);
 
 #endif /* HW_NCR53C710_H */
