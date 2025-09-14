@@ -26,11 +26,8 @@
 #define TYPE_NCR710_SCSI "ncr710-scsi"
 #define TYPE_SYSBUS_NCR710_SCSI "sysbus-ncr710-scsi"
 
-// #define TYPE_NCR53C710 "ncr53c710"
-// #define TYPE_SYSBUS_NCR710_SCSI "ncr53c710"
-// #define SYSBUS_NCR710_SCSI(obj) \
-//     OBJECT_CHECK(SysBusNCR710State, (obj), TYPE_SYSBUS_NCR710_SCSI)
-// OBJECT_DECLARE_SIMPLE_TYPE(NCR710State, NCR53C710)
+#define SYSBUS_NCR710_SCSI(obj) \
+    OBJECT_CHECK(SysBusNCR710State, (obj), TYPE_SYSBUS_NCR710_SCSI)
 
 #define DEBUG_NCR710
 #define DEBUG_NCR710_REG
@@ -107,7 +104,6 @@
 #define PHASE_MI   7  /* Message in phase */
 #define PHASE_MASK 7  /* Mask for phase bits */
 
-
 /* Other constants */
 #define NCR710_BUF_SIZE         4096
 #define NCR710_HOST_ID          7
@@ -115,6 +111,10 @@
 
 #define NCR710_DMA_FIFO_SIZE    64
 #define NCR710_SCSI_FIFO_SIZE   8
+
+/* Forward declarations */
+typedef struct NCR710State NCR710State;
+typedef struct NCR710Request NCR710Request;
 
 /* DMA FIFO structure - 64 bytes with parity */
 typedef struct {
@@ -138,9 +138,6 @@ typedef struct {
     NCR710_SCSI_FIFO scsi;
     uint8_t status;
 } NCR710FIFO;
-
-/* Forward declaration */
-typedef struct NCR710Request NCR710Request;
 
 /* Scripts state structure */
 typedef struct {

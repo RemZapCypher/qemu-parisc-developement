@@ -34,23 +34,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(LasiNCR710State, LASI_NCR710)
 #define PARISC_DEVICE_CONFIG_OFF 0x04   /* Configuration data */
 
 /* LASI NCR53C710 state */
-struct LasiNCR710State {
+typedef struct LasiNCR710State {
     SysBusDevice parent_obj;
-
-    MemoryRegion mmio;              /* Memory region for LASI SCSI interface */
-    qemu_irq irq;                   /* IRQ line to LASI */
-
-    DeviceState *ncr710_dev;        /* Pointer to NCR53C710 device */
-    NCR710State *ncr710;     /* Direct access to NCR710 state */
-
-    /* PA-RISC device identification */
-    uint32_t hw_type;               /* Hardware type (HPHW_FIO) */
-    uint32_t sversion;              /* Software version */
-    uint32_t hversion;              /* Hardware version */
-    
-    /* Endianness conversion flags */
-    bool big_endian;                /* True if system is big endian (PA-RISC) */
-};
+    MemoryRegion mmio;
+    qemu_irq irq;
+    uint32_t hw_type;        /* Hardware type (HPHW_*) */
+    uint32_t sversion;       /* Software version */
+    uint32_t hversion;       /* Hardware version */
+    DeviceState *ncr710_dev; /* NCR710 device */
+} LasiNCR710State;
 
 /* Create and initialize a LASI NCR710 device */
 DeviceState *lasi_ncr710_init(MemoryRegion *addr_space, hwaddr hpa, qemu_irq irq);
