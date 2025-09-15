@@ -84,14 +84,12 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
         return val;
     }
 
-    /* Also implement hversion register at offset 0x08 */
     if (addr == 0x08) {
         val = s->hversion;
         qemu_log(" -> HVersion = 0x%02x\n", (int)val);
         return val;
     }
 
-    /* Implement status register at 0x0C indicating device is present and functional */
     if (addr == 0x0C) {
         val = 0x53434E52;  /* 'SCNR' - identify as SCSI NCR device */
         qemu_log(" -> SCSI Identification = 0x%08x\n", (int)val);
@@ -110,8 +108,6 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
             }
         }
     }
-
-    /* Other registers - return 0 for now */
     val = 0;
     qemu_log(" -> Default = 0x%x\n", (int)val);
     return val;

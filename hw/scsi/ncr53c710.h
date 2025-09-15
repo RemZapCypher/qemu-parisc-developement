@@ -34,15 +34,15 @@
 
 #ifdef DEBUG_NCR710
 #define DPRINTF(fmt, ...) \
-    qemu_log("ncr710: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: ncr710: " fmt, ## __VA_ARGS__)
 #define BADF(fmt, ...) \
-    qemu_log("ncr710: error: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: ncr710: error: " fmt, ## __VA_ARGS__)
 #define NCR710_DPRINTF(fmt, ...) \
-    qemu_log("ncr710: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: ncr710: " fmt, ## __VA_ARGS__)
 #else
 #define DPRINTF(fmt, ...) do {} while(0)
 #define BADF(fmt, ...) \
-    qemu_log("ncr710: error: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"ncr710: error: " fmt, ## __VA_ARGS__)
 #define NCR710_DPRINTF(fmt, ...) do {} while(0)
 #endif
 
@@ -95,14 +95,7 @@
 /* Alias names for backward compatibility */
 #define NCR710_REVISION_2       0x02
 
-/* SCSI phases */
-#define PHASE_DO   0  /* Data out phase */
-#define PHASE_DI   1  /* Data in phase */
-#define PHASE_CO   2  /* Command phase */
-#define PHASE_SI   3  /* Status phase */
-#define PHASE_MO   6  /* Message out phase */
-#define PHASE_MI   7  /* Message in phase */
-#define PHASE_MASK 7  /* Mask for phase bits */
+
 
 /* Other constants */
 #define NCR710_BUF_SIZE         4096
@@ -227,7 +220,6 @@ struct NCR710State {
     int carry;
     bool script_active;
     int waiting;
-    bool mode_700;             /* True for 700 mode, false for 710 mode */
     int dma_pending;
     uint8_t command_complete;
 
@@ -269,7 +261,5 @@ static inline SysBusNCR710State *sysbus_from_ncr710(NCR710State *s)
 /* Function prototypes */
 DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq);
 DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq);
-bool ncr710_is_700_mode(NCR710State *s);
-void ncr710_set_700_mode(NCR710State *s, bool mode_700);
 
 #endif /* HW_NCR53C710_H */
