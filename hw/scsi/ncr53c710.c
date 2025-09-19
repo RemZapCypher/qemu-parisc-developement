@@ -18,7 +18,7 @@
  * 1. Register Definitions
  * 2. Register name functions
  * 3. Parity functions
- * 4. DMA/SCSI FIFO Structures
+ * 4. SCSI FIFO Structures
  * 5. Scripts Misc functions
  * 6. DMA functions
  * 7. Scripts functions
@@ -38,23 +38,6 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "trace.h"
-
-/* Standard SCSI Message Byte Constants */
-#define SCSI_MSG_ABORT                  0x06
-#define SCSI_MSG_BUS_DEVICE_RESET       0x0c
-#define SCSI_MSG_COMMAND_COMPLETE       0x00
-#define SCSI_MSG_DISCONNECT             0x04
-#define SCSI_MSG_EXTENDED_MESSAGE       0x01
-#define SCSI_MSG_IDENTIFY               0x80
-#define SCSI_MSG_IGNORE_WIDE_RESIDUE    0x23
-#define SCSI_MSG_MESSAGE_PARITY_ERROR   0x09
-#define SCSI_MSG_MESSAGE_REJECT         0x07
-#define SCSI_MSG_NO_OPERATION           0x08
-#define SCSI_MSG_RELEASE_RECOVERY       0x10
-#define SCSI_MSG_RESTORE_POINTERS       0x03
-#define SCSI_MSG_SAVE_DATA_POINTER      0x02
-#define SCSI_MSG_SYNCHRONOUS_DATA_TRANSFER  0x01
-#define SCSI_MSG_WIDE_DATA_TRANSFER     0x03
 #include "qom/object.h"
 
 #define NCR710_MAX_DEVS 7
@@ -218,12 +201,29 @@
 #define NCR710_BUF_SIZE      4096
 #define NCR710_HOST_ID    7
 
-/* NCR53C710 has 8-byte SCSI FIFO and 64-byte DMA FIFO */
+/* NCR53C710 has 8-byte SCSI FIFO */
 #define SCRIPT_STACK_SIZE 8
 #define NCR710_FIFO_DEPTH       16  /* General FIFO depth for other operations */
 #define NCR710_FIFO_FULL        0x01
 #define NCR710_FIFO_EMPTY       0x02
 #define NCR710_MAX_MSGIN_LEN 8
+
+/* Standard SCSI Message Byte Constants */
+#define SCSI_MSG_ABORT                  0x06
+#define SCSI_MSG_BUS_DEVICE_RESET       0x0c
+#define SCSI_MSG_COMMAND_COMPLETE       0x00
+#define SCSI_MSG_DISCONNECT             0x04
+#define SCSI_MSG_EXTENDED_MESSAGE       0x01
+#define SCSI_MSG_IDENTIFY               0x80
+#define SCSI_MSG_IGNORE_WIDE_RESIDUE    0x23
+#define SCSI_MSG_MESSAGE_PARITY_ERROR   0x09
+#define SCSI_MSG_MESSAGE_REJECT         0x07
+#define SCSI_MSG_NO_OPERATION           0x08
+#define SCSI_MSG_RELEASE_RECOVERY       0x10
+#define SCSI_MSG_RESTORE_POINTERS       0x03
+#define SCSI_MSG_SAVE_DATA_POINTER      0x02
+#define SCSI_MSG_SYNCHRONOUS_DATA_TRANSFER  0x01
+#define SCSI_MSG_WIDE_DATA_TRANSFER     0x03
 
 /* Script interrupt codes - matching Linux 53c700 driver expectations */
 #define A_GOOD_STATUS_AFTER_STATUS          0x401
@@ -343,11 +343,8 @@ static inline int ncr710_irq_on_rsl(NCR710State *s)
 }
 
 /* Forward declaration */
-static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo);
 static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo);
 const char *ncr710_reg_name(int offset);
-static int ncr710_dma_fifo_fill_from_memory(NCR710State *s, uint32_t addr, int len);
-static int ncr710_dma_fifo_drain_to_buffer(NCR710State *s, uint8_t *buf, int max_len);
 static void ncr710_script_scsi_interrupt(NCR710State *s, int stat0);
 static void ncr710_update_irq(NCR710State *s);
 static void ncr710_script_dma_interrupt(NCR710State *s, int stat);
@@ -356,7 +353,6 @@ static inline void ncr710_dma_write(NCR710State *s, uint32_t addr, const void *b
 void ncr710_request_cancelled(SCSIRequest *req);
 void ncr710_command_complete(SCSIRequest *req, size_t resid);
 void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
-void ncr710_update_compatibility_mode(NCR710State *s, bool mode_700);
 
 
 
@@ -376,7 +372,7 @@ static void ncr710_soft_reset(NCR710State *s)
     s->istat &= 0x40;
     s->dcmd = 0x40;
     s->dstat = NCR710_DSTAT_DFE;
-    s->dien = 0;
+    s->dien = 0x04;
     s->sien0 = 0;
     s->ctest2 = NCR710_CTEST2_DACK;
     s->ctest3 = 0;
@@ -399,8 +395,6 @@ static void ncr710_soft_reset(NCR710State *s)
     s->sidl = 0;
     assert(QTAILQ_EMPTY(&s->queue));
     assert(!s->current);
-
-    ncr710_dma_fifo_init(&s->dma_fifo);
     ncr710_scsi_fifo_init(&s->scsi_fifo);
 }
 
@@ -499,7 +493,6 @@ static uint8_t ncr710_generate_scsi_parity(NCR710State *s, uint8_t data)
     return parity;
 }
 
-/* Check if received parity is correct */
 static bool ncr710_check_scsi_parity(NCR710State *s, uint8_t data, uint8_t parity)
 {
     /* Only check if parity checking is enabled */
@@ -511,7 +504,6 @@ static bool ncr710_check_scsi_parity(NCR710State *s, uint8_t data, uint8_t parit
     return parity == expected_parity;
 }
 
-/* Handle parity error */
 static void ncr710_handle_parity_error(NCR710State *s)
 {
     s->sstat0 |= NCR710_SSTAT0_PAR;  /* Set parity error bit */
@@ -524,6 +516,23 @@ static void ncr710_handle_parity_error(NCR710State *s)
     /* Generate interrupt if enabled */
     ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_PAR);
 }
+
+/*
+static uint8_t ncr710_get_msgbyte(NCR710State *s)
+{
+    uint8_t data;
+    ncr710_dma_read(s, s->dnad, &data, 1);
+    s->dnad++;
+    s->dbc--;
+    return data;
+}
+
+static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
+{
+    s->dnad += n;
+    s->dbc  -= n;
+}
+*/
 
 /*
  * FIFO IMPLEMENTATION WITH PROPER BUFFERING AND FLOW CONTROL
@@ -545,190 +554,13 @@ static void ncr710_handle_parity_error(NCR710State *s)
  * 5. REGISTER ACCURACY: FIFO status properly reflected in SSTAT/DSTAT
  *    registers for software compatibility
  *
- * DMA FIFO Flow:
- *   OUT: Memory -> DMA FIFO -> Device Buffer
- *   IN:  Device Buffer -> DMA FIFO -> Memory
- *
  * SCSI FIFO Flow:
  *   OUT: Memory -> SCSI FIFO -> Command/Message Processing
  *   IN:  Status/Message -> SCSI FIFO -> Memory
+ *
+ * DMA operations are performed directly between memory and device buffers,
+ * similar to the reference NCR710 implementation.
  */
-
-
-/* Starting with DMA FIFO:
- * - dma_fifo_init() to initialize the FIFO
- * - dma_fifo_push() to push data into the FIFO
- * - dma_fifo_pop() to pop data from the FIFO
- * - dma_fifo_empty() and dma_fifo_full() to check FIFO status
- * - dma_fifo_flush() to clear the FIFO
-*/
-
- /* Initialize a DMA FIFO */
-static void ncr710_dma_fifo_init(NCR710_DMA_FIFO *fifo)
-{
-    memset(fifo->data, 0, NCR710_DMA_FIFO_SIZE);
-    memset(fifo->parity, 0, NCR710_DMA_FIFO_SIZE);
-    fifo->head = 0;
-    fifo->tail = 0;
-    fifo->count = 0;
-}
-
-/* Check if DMA FIFO is empty */
-static inline bool ncr710_dma_fifo_empty(NCR710_DMA_FIFO *fifo)
-{
-    return fifo->count == 0;
-}
-
-/* Check if DMA FIFO is full */
-static inline bool ncr710_dma_fifo_full(NCR710_DMA_FIFO *fifo)
-{
-    return fifo->count == NCR710_DMA_FIFO_SIZE;
-}
-
-/* Push a byte with its parity bit into the DMA FIFO */
-static inline int ncr710_dma_fifo_push(NCR710_DMA_FIFO *fifo, uint8_t data, uint8_t parity)
-{
-    if (ncr710_dma_fifo_full(fifo)) {
-        return -1; /* FIFO full */
-    }
-
-    fifo->data[fifo->head] = data;
-    fifo->parity[fifo->head] = parity;
-    fifo->head = (fifo->head + 1) % NCR710_DMA_FIFO_SIZE;
-    fifo->count++;
-    return 0;
-}
-
-/* Pop a byte and its parity bit from the DMA FIFO */
-static inline uint8_t ncr710_dma_fifo_pop(NCR710_DMA_FIFO *fifo, uint8_t *parity)
-{
-    uint8_t data;
-
-    if (ncr710_dma_fifo_empty(fifo)) {
-        *parity = 0;
-        return 0; /* FIFO empty */
-    }
-
-    data = fifo->data[fifo->tail];
-    *parity = fifo->parity[fifo->tail];
-    fifo->tail = (fifo->tail + 1) % NCR710_DMA_FIFO_SIZE;
-    fifo->count--;
-
-    return data;
-}
-
-static inline void ncr710_dma_fifo_flush(NCR710State *s)
-{
-    ncr710_dma_fifo_init(&s->dma_fifo);
-}
-
-/* Transfer data from DMA FIFO to buffer */
-static int ncr710_dma_fifo_drain_to_buffer(NCR710State *s, uint8_t *buf, int max_len)
-{
-    int count = 0;
-    uint8_t parity, data;
-
-    while (count < max_len && !ncr710_dma_fifo_empty(&s->dma_fifo)) {
-        data = ncr710_dma_fifo_pop(&s->dma_fifo, &parity);
-        buf[count++] = data;
-
-        /* Update SFBR with first byte */
-        if (count == 1) {
-            s->sfbr = data;
-        }
-    }
-
-    return count;
-}
-
-/* Fill DMA FIFO from buffer */
-static int ncr710_dma_fifo_fill_from_buffer(NCR710State *s, const uint8_t *buf, int len)
-{
-    int count = 0;
-
-    while (count < len && !ncr710_dma_fifo_full(&s->dma_fifo)) {
-        uint8_t data = buf[count];
-        uint8_t parity = ncr710_generate_scsi_parity(s, data);
-
-        if (ncr710_dma_fifo_push(&s->dma_fifo, data, parity) < 0) {
-            break;
-        }
-
-        /* Update SFBR with first byte */
-        if (count == 0) {
-            s->sfbr = data;
-        }
-
-        count++;
-    }
-
-    return count;
-}
-
-/* Transfer data from DMA FIFO to memory */
-static int ncr710_dma_fifo_drain_to_memory(NCR710State *s, uint32_t addr, int max_len)
-{
-    int count = 0;
-    uint8_t parity, data;
-    uint8_t buf[NCR710_DMA_FIFO_SIZE];
-
-    /* First collect data from FIFO */
-    while (count < max_len && count < NCR710_DMA_FIFO_SIZE &&
-           !ncr710_dma_fifo_empty(&s->dma_fifo)) {
-        data = ncr710_dma_fifo_pop(&s->dma_fifo, &parity);
-        buf[count++] = data;
-    }
-
-    if (count > 0) {
-        /* Then write to memory */
-        ncr710_dma_write(s, addr, buf, count);
-
-        /* Update SFBR with first byte */
-        s->sfbr = buf[0];
-    }
-
-    return count;
-}
-
-/* Fill DMA FIFO from memory */
-static int ncr710_dma_fifo_fill_from_memory(NCR710State *s, uint32_t addr, int len)
-{
-    int count = 0;
-    uint8_t buf[NCR710_DMA_FIFO_SIZE];
-
-    /* Read data from memory first */
-    int to_read = MIN(len, NCR710_DMA_FIFO_SIZE);
-    to_read = MIN(to_read, NCR710_DMA_FIFO_SIZE - s->dma_fifo.count); /* Don't overfill */
-
-    if (to_read <= 0) {
-        return 0;
-    }
-
-    ncr710_dma_read(s, addr, buf, to_read);
-
-    /* Then push into FIFO */
-    while (count < to_read && !ncr710_dma_fifo_full(&s->dma_fifo)) {
-        uint8_t data = buf[count];
-        uint8_t parity = 0;
-
-        if (s->scntl0 & NCR710_SCNTL0_EPG) {
-            parity = ncr710_generate_scsi_parity(s, data);
-        }
-
-        if (ncr710_dma_fifo_push(&s->dma_fifo, data, parity) < 0) {
-            break;
-        }
-
-        /* Update SFBR with first byte */
-        if (count == 0) {
-            s->sfbr = data;
-        }
-
-        count++;
-    }
-
-    return count;
-}
 
 /* Starting with SCSI FIFO:
  * - scsi_fifo_init() to initialize the FIFO
@@ -953,9 +785,7 @@ static void ncr710_stop_script(NCR710State *s)
             s->script_active, s->dsp, s->dsps);
     s->script_active = 0;
     s->scripts.running = false;
-    /* Clear ISTAT CON bit to indicate script processor is no longer running */
     s->istat &= ~NCR710_ISTAT_CON;
-    /* Note: Keep DIP bit set so driver can read DSTAT to handle completion */
     DPRINTF("SCRIPTS execution stopped at PC=0x%08x (istat now=0x%02x)\n", s->scripts.pc, s->istat);
 }
 
@@ -1009,6 +839,12 @@ static void ncr710_update_irq(NCR710State *s)
     }
     qemu_set_irq(ncr710_dev->irq, level);
 
+    if (level == 1) {
+        printf("*** NCR710 FIRING INTERRUPT *** IRQ Line Called with level=1\n");
+        printf("*** DSTAT=0x%02x DIEN=0x%02x ISTAT=0x%02x ***\n", s->dstat, s->dien, s->istat);
+        fflush(stdout);
+    }
+
     if (!level && ncr710_irq_on_rsl(s) && !(s->scntl1 & NCR710_SCNTL1_CON)) {
         DPRINTF("Handled IRQs & disconnected, looking for pending "
                 "processes\n");
@@ -1049,15 +885,26 @@ static void ncr710_script_dma_interrupt(NCR710State *s, int stat)
      * completely - just pause execution so the driver can handle it */
     if (stat == NCR710_DSTAT_SIR) {
         switch (s->dsps) {
+            case 0x00000401: /* Good status after status */
+                DPRINTF("COMPLETION INTERRUPT - command successful (dsps=0x%08x, active=%d->0)\n",
+                        s->dsps, s->script_active);
+                s->script_active = 0; /* Pause but don't reset script state? */
+                s->istat |= NCR710_ISTAT_DIP;
+                s->dsp = 0;
+                s->istat &= ~NCR710_ISTAT_CON;  // Clear "Connected" bit
+                DPRINTF("COMPLETION: Reset DSP to 0x00000000, cleared CON bit\n");
+                
+                ncr710_update_irq(s);
+                return;
+                
         case 0x00000520: /* Phase mismatch - data phase */
         case 0x00000020: /* Unexpected phase */
-        case 0x00000401: /* Good status after status */
-            DPRINTF("Phase mismatch interrupt - pausing script for driver handling (dsps=0x%08x, active=%d->0)\n",
-                    s->dsps, s->script_active);
-            s->script_active = 0; /* Pause but don't reset script state */
-            s->istat |= NCR710_ISTAT_DIP;
-            ncr710_update_irq(s);
-            return;
+                DPRINTF("Phase mismatch interrupt - pausing script for driver handling (dsps=0x%08x, active=%d->0)\n",
+                        s->dsps, s->script_active);
+                s->script_active = 0; /* Pause but don't reset script state */
+                s->istat |= NCR710_ISTAT_DIP;
+                ncr710_update_irq(s);
+                return;
         default:
             DPRINTF("Other script interrupt: dsps=0x%08x\n", s->dsps);
             break;
@@ -1068,10 +915,8 @@ static void ncr710_script_dma_interrupt(NCR710State *s, int stat)
     ncr710_stop_script(s);
 }
 
-/* Generate script interrupt with proper DSPS value for Linux driver */
 static void ncr710_script_interrupt_with_dsps(NCR710State *s, uint32_t dsps_value)
 {
-    /* Decode interrupt code for debugging */
     const char *interrupt_name = "UNKNOWN";
     switch (dsps_value) {
         case GOOD_STATUS_AFTER_STATUS: interrupt_name = "GOOD_STATUS_AFTER_STATUS"; break;
@@ -1088,10 +933,8 @@ static void ncr710_script_interrupt_with_dsps(NCR710State *s, uint32_t dsps_valu
 
     DPRINTF("Script interrupt: DSPS=0x%08x (%s)\n", dsps_value, interrupt_name);
 
-    /* Set DSPS register with the interrupt code */
     s->dsps = dsps_value;
 
-    /* Generate script interrupt */
     ncr710_script_dma_interrupt(s, NCR710_DSTAT_SIR);
 }
 
@@ -1111,6 +954,16 @@ static inline void ncr710_set_phase(NCR710State *s, int phase)
 	if (phase == PHASE_DI)
 		s->ctest0 |= 1;
 	s->sbcl &= ~NCR710_SBCL_REQ;
+}
+
+static void ncr710_bad_phase(NCR710State *s, int out, int new_phase)
+{
+    /* Trigger a phase mismatch.  */
+    DPRINTF("Phase mismatch interrupt\n");
+    ncr710_set_phase(s, new_phase);
+	s->sbcl |= NCR710_SBCL_REQ;
+    ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_MA);
+    ncr710_stop_script(s);
 }
 
 /* Resume SCRIPTS execution after a DMA operation.  */
@@ -1146,9 +999,8 @@ static void ncr710_do_dma(NCR710State *s, int out)
 {
     DPRINTF("NCR710_DO_DMA START\n");
     uint32_t count;
-    dma_addr_t addr;
+    uint32_t addr;
     SCSIDevice *dev;
-    // uint8_t fifo_buffer[NCR710_DMA_FIFO_SIZE];
     int transferred = 0;
 
     if (!s->current || s->current->dma_len == 0) {
@@ -1182,32 +1034,25 @@ static void ncr710_do_dma(NCR710State *s, int out)
 
     addr = s->dnad;
 
-    DPRINTF("DMA addr=0x" DMA_ADDR_FMT " len=%d out=%d\n", addr, count, out);
+    DPRINTF("DMA addr=%d len=%d out=%d\n", addr, count, out);
 
     if (s->current->dma_buf == NULL) {
         s->current->dma_buf = scsi_req_get_buf(s->current->req);
     }
 
     if (out) {
-        /* Memory to device (Write operation) */
-        /* Stage 1: Fill DMA FIFO from memory */
-        int filled = ncr710_dma_fifo_fill_from_memory(s, addr, count);
+        /* Memory to device (Write operation) - Direct transfer */
+        ncr710_dma_read(s, addr, s->current->dma_buf, count);
+        transferred = count;
 
-        /* Stage 2: Drain DMA FIFO to device buffer */
-        transferred = ncr710_dma_fifo_drain_to_buffer(s, s->current->dma_buf, filled);
-
-        DPRINTF("DMA Write: filled FIFO=%d, transferred to device=%d\n", filled, transferred);
+        DPRINTF("DMA Write: direct transfer=%d bytes\n", transferred);
 
     } else {
-        /* Device to memory (Read operation) */
-        /* Stage 1: Fill DMA FIFO from device buffer */
-        transferred = ncr710_dma_fifo_fill_from_buffer(s, s->current->dma_buf, count);
+        /* Device to memory (Read operation) - Direct transfer */
+        ncr710_dma_write(s, addr, s->current->dma_buf, count);
+        transferred = count;
 
-        /* Stage 2: Drain DMA FIFO to memory */
-        int drained = ncr710_dma_fifo_drain_to_memory(s, addr, transferred);
-
-        DPRINTF("DMA Read: filled from device=%d, drained to memory=%d\n", transferred, drained);
-        transferred = drained; /* Use the amount actually written to memory */
+        DPRINTF("DMA Read: direct transfer=%d bytes\n", transferred);
     }
 
     /* Update DMA pointers and counters */
@@ -1218,6 +1063,7 @@ static void ncr710_do_dma(NCR710State *s, int out)
     if (s->current->dma_len == 0) {
         s->current->dma_buf = NULL;
         s->waiting = 0;  /* Clear waiting state */
+        s->script_active = 1; /* Resume script execution */
         scsi_req_continue(s->current->req);
         /* Schedule script continuation */
         ncr710_resume_script(s);
@@ -1227,12 +1073,8 @@ static void ncr710_do_dma(NCR710State *s, int out)
         ncr710_resume_script(s);
     }
 
-    /* Update DSTAT register to reflect FIFO status */
-    if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-        s->dstat |= NCR710_DSTAT_DFE;  /* DMA FIFO Empty */
-    } else {
-        s->dstat &= ~NCR710_DSTAT_DFE;
-    }
+    /* Update DSTAT register - DMA FIFO is always empty after direct transfer */
+    s->dstat |= NCR710_DSTAT_DFE;  /* DMA FIFO Empty */
     DPRINTF("NCR710_DO_DMA END\n");
 }
 
@@ -1389,6 +1231,7 @@ void ncr710_command_complete(SCSIRequest *req, size_t resid)
 
     DPRINTF("Command complete status=%d (%s)\n", (int)req->status, status_name);
 
+    int out = (s->sstat2 & PHASE_MASK) == PHASE_DO;
     if (req->status == 0x02) {  /* CHECK CONDITION */
         DPRINTF("TODO:IMPLEMENT");
     }
@@ -1396,8 +1239,12 @@ void ncr710_command_complete(SCSIRequest *req, size_t resid)
     s->status = req->status;
     s->command_complete = 2;
 
-    /* Set status phase */
-    ncr710_set_phase(s, PHASE_SI);
+    if (s->waiting && s->dbc != 0) {
+        /* Raise phase mismatch for short transfers.  */
+        ncr710_bad_phase(s, out, PHASE_ST);
+    } else {
+        ncr710_set_phase(s, PHASE_ST);
+    }
 
     DPRINTF("Command completed with status=%d - letting SCRIPTS continue\n", req->status);
 
@@ -1503,10 +1350,26 @@ static void ncr710_do_command(NCR710State *s)
     DPRINTF("Send command len=%d %s(0x%02x) %02x.%02x.%02x.%02x.%02x.%02x\n",
             bytes_read, cmd_name, buf[0], buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
 
-    /* Special handling for problematic commands */
-    if (buf[0] == 0x24) {
-        DPRINTF("TODO:IMPLEMENT");
+    if (buf[0] == 0x43) {  // READ_TOC
+        DPRINTF("*** READ_TOC COMMAND DETECTED ***\n");
+        DPRINTF("*** This command may not be properly supported by the target device ***\n");
+        DPRINTF("*** If timeout occurs, it's a SCSI device issue, not NCR710 ***\n");
+        
+        // Log full CDB for debugging
+        DPRINTF("READ_TOC CDB: ");
+        for (int i = 0; i < bytes_read && i < 10; i++) {
+            printf("%02x ", buf[i]);
+        }
+        printf("\n");
+        
+        // Log target device info
+        id = (s->select_tag >> 8) & 0xff;
+        DPRINTF("Target ID: %d, LUN: %d\n", idbitstonum(id), s->current_lun);
+        printf("*** NCR710: READ_TOC to target %d - if this hangs, it's a device compatibility issue ***\n", 
+               idbitstonum(id));
+        fflush(stdout);
     }
+    /* Special handling for problematic commands */
     s->command_complete = 0;
 
     id = (s->select_tag >> 8) & 0xff;
@@ -1554,6 +1417,7 @@ static void ncr710_do_command(NCR710State *s)
 static void ncr710_do_status(NCR710State *s)
 {
     uint8_t status = s->status;
+    printf("NCR710_DO_STATUS: status=0x%02x\n", status);
 
     if (s->dbc != 1)
         BADF("Bad Status move\n");
@@ -1836,24 +1700,25 @@ static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count
     DPRINTF("SCRIPTS MEMCPY: dest=0x%08x src=0x%08x count=%d (DSP=0x%08x)\n",
             dest, src, count, s->dsp);
 
-    /* Process in chunks that fit in the DMA FIFO */
+    /* Direct memory to memory transfer using temporary buffer like reference implementation */
+    #define NCR710_BUF_SIZE 4096
+    uint8_t buf[NCR710_BUF_SIZE];
+    
     while (count) {
-        int chunk = MIN(count, NCR710_DMA_FIFO_SIZE);
-        printf("MEMCPY chunk size=%d\n", chunk);
-        int filled = ncr710_dma_fifo_fill_from_memory(s, src, chunk);
-        int drained = ncr710_dma_fifo_drain_to_memory(s, dest, filled);
+        int chunk = MIN(count, NCR710_BUF_SIZE);
+        
+        /* Read from source */
+        ncr710_dma_read(s, src, buf, chunk);
+        
+        /* Write to destination */
+        ncr710_dma_write(s, dest, buf, chunk);
 
-        DPRINTF("MEMCPY chunk: src=0x%08x dest=0x%08x chunk=%d filled=%d drained=%d\n",
-                src, dest, chunk, filled, drained);
+        DPRINTF("MEMCPY chunk: src=0x%08x dest=0x%08x chunk=%d\n",
+                src, dest, chunk);
 
-        src += drained;
-        dest += drained;
-        count -= drained;
-        if (drained < filled) {
-            BADF("memcpy: short transfer - only %d of %d bytes moved\n",
-                 drained, filled);
-            break;
-        }
+        src += chunk;
+        dest += chunk;
+        count -= chunk;
     }
 }
 
@@ -1922,18 +1787,6 @@ static void ncr710_execute_script(NCR710State *s)
     s->scripts.running = true;
 
 again:
-    /* Check if we should stop script execution:: FIX NOW! OR LATER MY CHOICE :) */
-    // if (insn_processed >= MAX_INSTRUCTIONS) {
-    //     DPRINTF("Script execution limit reached, stopping to prevent infinite loop\n");
-    //     ncr710_stop_script(s);
-    //     return;
-    // }
-
-    // if (!s->script_active || s->waiting != 0) {
-    //     /* Script was stopped or is waiting for external event */
-    //     return;
-    // }
-
     insn_processed++;
     s->scripts.pc = s->dsp;  /* Update scripts program counter */
 
@@ -1982,35 +1835,12 @@ again:
             DPRINTF("Phase mismatch: got %s(%d) expected %s(%d)\n",
                     phase_names[current_phase], current_phase,
                     phase_names[expected_phase], expected_phase);
-
-            /* Before generating interrupt, check if this is a valid phase transition */
-            if (s->current && s->current->dma_len > 0) {
-                /* We have data to transfer - update to expected phase */
-                DPRINTF("Updating phase to expected phase for data transfer\n");
-                ncr710_set_phase(s, expected_phase);
-                /* Continue with the block move instead of interrupting */
-            } else {
-                /* Use appropriate interrupt code based on context */
-                uint32_t interrupt_code = 0;
-                switch (expected_phase) {
-                    case PHASE_CO: /* Command phase expected */
-                        interrupt_code = UNEXPECTED_PHASE_BEFORE_CMD;
-                        break;
-                    case PHASE_DI: /* Data In expected */
-                        interrupt_code = 0x520; /* UNEXPECTED_PHASE_AFTER_DATA_IN */
-                        break;
-                    case PHASE_DO: /* Data Out expected */
-                        interrupt_code = 0x620; /* UNEXPECTED_PHASE_AFTER_DATA_OUT */
-                        break;
-                    default:
-                        interrupt_code = UNEXPECTED_PHASE; /* Generic unexpected phase */
-                        break;
-                }
-
-                ncr710_script_interrupt_with_dsps(s, interrupt_code);
-                s->sbcl |= NCR710_SBCL_REQ;
-                break;
-            }
+            DPRINTF("NCR53C710: Phase mismatch - generating SCSI interrupt (MA bit)\n");
+            ncr710_set_phase(s, current_phase);
+            s->sbcl |= NCR710_SBCL_REQ;
+            ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_MA);
+            ncr710_stop_script(s);
+            break;
         }
 
         /* Check if we have a connection before doing DMA */
@@ -2241,9 +2071,9 @@ again:
             int cond;
             int jmp;
 
-            if ((insn & 0x002e0000) == 0) {
-                DPRINTF("NOP\n");
-                break;
+            if ((insn & 0x002e0000) != 0) {
+                DPRINTF("TRANSFER CONTROL: insn=0x%08x sfbr=0x%02x addr=0x%08x\n", 
+                        insn, s->sfbr, addr);
             }
             if (s->sstat0 & NCR710_SSTAT0_STO) {
                 DPRINTF("Delayed select timeout\n");
@@ -2441,7 +2271,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             ret = s->scntl0;
             break;
         case NCR710_SCNTL1_REG: /* SCNTL1 */
-            ret = s->scntl1; /* Fix implement changes for 700 mode */
+            ret = s->scntl1;
             break;
         case NCR710_SDID_REG: /* SDID */
             ret = s->sdid;
@@ -2488,33 +2318,26 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             ret = s->dstat;
             DPRINTF("DSTAT read: 0x%02x (script_active=%d, waiting=%d, dsps=0x%08x)\n", 
                     ret, s->script_active, s->waiting, s->dsps);
-            /* Update DMA FIFO Empty flag */
-            if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                ret |= NCR710_DSTAT_DFE;
-            } else {
-                ret &= ~NCR710_DSTAT_DFE;
-            }
+            ret |= NCR710_DSTAT_DFE;
+            
             bool had_script_interrupt = (s->dstat & NCR710_DSTAT_SIR) != 0;
-            bool was_good_status = (s->dsps == 0x00000401);
-
+            bool was_completion = (s->dsps == 0x00000401);  // Good status completion
+            
             s->dstat = 0;  /* Clear DSTAT on read */
-            /* Clear DIP bit in ISTAT when DSTAT is read */
             s->istat &= ~NCR710_ISTAT_DIP;
-            DPRINTF("DSTAT cleared: istat now=0x%02x, had_interrupt=%d, was_good_status=%d\n",
-                    s->istat, had_script_interrupt, was_good_status);
             ncr710_update_irq(s);
+            
+            // ADD THIS DEBUG:
+            if (was_completion) {
+                DPRINTF("*** COMPLETION INTERRUPT HANDLED - SCRIPT STAYS PAUSED ***\n");
+                DPRINTF("*** DRIVER SHOULD PROCESS COMPLETION AND START NEXT COMMAND ***\n");
+            }
 
-            /* Only resume script execution if it wasn't a completion interrupt */
-            if (had_script_interrupt && s->script_active == 0 && !was_good_status) {
+            /* DON'T automatically resume scripts after completion interrupts */
+            if (had_script_interrupt && s->script_active == 0 && !was_completion) {
                 DPRINTF("DSTAT read cleared script interrupt, resuming execution\n");
                 s->script_active = 1;
                 ncr710_execute_script(s);
-            } else if (had_script_interrupt && was_good_status) {
-                DPRINTF("DSTAT read: Good status interrupt, NOT resuming script\n");
-            } else if (!had_script_interrupt) {
-                DPRINTF("DSTAT read: No script interrupt to clear\n");
-            } else if (s->script_active != 0) {
-                DPRINTF("DSTAT read: Script still active, not resuming\n");
             }
             break;
         case NCR710_SSTAT0_REG: /* SSTAT0 */
@@ -2532,11 +2355,8 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             } else {
                 ret &= ~NCR710_SSTAT1_ILF;
             }
-            if (!ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                ret |= NCR710_SSTAT1_ORF;
-            } else {
-                ret &= ~NCR710_SSTAT1_ORF;
-            }
+            /* DMA FIFO is always empty with direct transfers */
+            ret &= ~NCR710_SSTAT1_ORF;
             if (s->scntl0 & NCR710_SCNTL0_EPG) {
                 if (!ncr710_scsi_fifo_empty(&s->scsi_fifo)) {
                     uint8_t parity = s->scsi_fifo.parity[0];
@@ -2578,11 +2398,8 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_CTEST2_REG: /* CTEST2 */
             ret = s->ctest2;
-            if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                s->ctest2 |= 0x04;
-            } else {
-                s->ctest2 &= ~0x04;
-            }
+            /* DMA FIFO is always empty in direct transfer mode */
+            s->ctest2 |= 0x04;
             break;
         case NCR710_CTEST3_REG: /* CTEST3 */
             ret = s->ctest3;
@@ -2604,27 +2421,16 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_CTEST6_REG: /* CTEST6 */
             ret = s->ctest6;
-            if (!ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                uint8_t parity;
-                ret = ncr710_dma_fifo_pop(&s->dma_fifo, &parity);
-                if (parity) {
-                    s->ctest2 |= 0x08;
-                } else {
-                    s->ctest2 &= ~0x08;
-                }
-            }
+            /* No DMA FIFO to pop with direct transfers */
             break;
         case NCR710_CTEST7_REG: /* CTEST7 */
             ret = s->ctest7;
             break;
         CASE_GET_REG32(temp, NCR710_TEMP_REG)
         case NCR710_DFIFO_REG: /* DFIFO */
-            /* In 710 mode: return current DFIFO value with DMA FIFO status */
+            /* With direct transfers, DMA FIFO is always empty */
             ret = s->dfifo;
-            s->dfifo = s->dma_fifo.count & 0x7F;
-            if (ncr710_dma_fifo_empty(&s->dma_fifo)) {
-                // s->dfifo |= 0x80; /* Set DFE bit */
-            }
+            s->dfifo = 0;  /* DMA FIFO count is always 0 */
             ret = s->dfifo;
             break;
         case NCR710_ISTAT_REG: /* ISTAT */
@@ -2714,10 +2520,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
             /* trace_ncr710_parity_sense_changed((val & NCR710_SCNTL1_AESP) != 0 ? "even" : "odd"); */
         }
 
-        if (val & NCR710_SCNTL1_ADB) {
-            qemu_log_mask(LOG_UNIMP, "NCR710: Immediate Arbitration not implemented\n");
-        }
-
         if (val & NCR710_SCNTL1_RST) {
             if (!(s->sstat0 & NCR710_SSTAT0_RST)) {
                 s->sstat0 |= NCR710_SSTAT0_RST;
@@ -2725,7 +2527,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
             }
             /* Enhanced reset handling for second implementation */
             if (!(old_val & NCR710_SCNTL1_RST)) {
-                NCR710_DPRINTF("NCR710: SCNTL1: SCSI bus reset initiated\n");
                 NCR710_DPRINTF("NCR710: SCNTL1: SCSI bus reset initiated\n");
                 ncr710_soft_reset(s);
             }
@@ -2736,7 +2537,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_SDID_REG: /* SDID */
         s->sdid = val & 0x0F; /* Only lower 4 bits are valid */
-        NCR710_DPRINTF("NCR710: SDID: set target ID=%d\n", s->sdid);
         NCR710_DPRINTF("NCR710: SDID: set target ID=%d\n", s->sdid);
         break;
 
@@ -2823,19 +2623,8 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_CTEST6_REG: /* CTEST6 */
         s->ctest6 = val;
-        NCR710_DPRINTF("CTEST6: DMA FIFO write 0x%02x\n", val);
-        /* DMA FIFO write - use proper parity from CTEST1 bit 3 (DFP) */
-        if (!ncr710_dma_fifo_full(&s->dma_fifo)) {
-            uint8_t parity = (s->ctest1 & 0x08) ? 1 : 0; /* DFP bit from CTEST1 */
-            ncr710_dma_fifo_push(&s->dma_fifo, val, parity);
-
-            /* Update CTEST2 bit 3 (DMA FIFO Parity) according to manual */
-            if (parity) {
-                s->ctest2 |= 0x08;
-            } else {
-                s->ctest2 &= ~0x08;
-            }
-        }
+        NCR710_DPRINTF("CTEST6: Value 0x%02x (no DMA FIFO with direct transfers)\n", val);
+        /* No DMA FIFO to push to with direct transfers */
         break;
 
     case NCR710_CTEST7_REG: /* CTEST7 */
@@ -2880,7 +2669,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
             ncr710_soft_reset(s);
             s->ctest8 = saved_ctest8;  /* Preserve chip revision */
             s->dstat = NCR710_DSTAT_DFE;
-            ncr710_dma_fifo_init(&s->dma_fifo);
             ncr710_scsi_fifo_init(&s->scsi_fifo);
         }
         s->istat = (s->istat & 0x0f) | (val & 0xf0);
@@ -2889,17 +2677,12 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
     case NCR710_CTEST8_REG: /* CTEST8 */
 
         if (val & 0x08) {
-            if (s->dma_fifo.count > 0) {
-                uint32_t flushed = ncr710_dma_fifo_drain_to_memory(s, s->dnad, s->dma_fifo.count);
-                s->dnad += flushed;
-                s->dnad += 0;
-                NCR710_DPRINTF("CTEST8: Flushed %d bytes from DMA FIFO to 0x%08x\n", flushed, s->dnad - flushed);
-            }
+            /* No DMA FIFO to flush with direct transfers */
+            NCR710_DPRINTF("CTEST8: FIFO flush command (no-op with direct transfers)\n");
             s->dstat |= NCR710_DSTAT_DFE;  /* Set DMA FIFO Empty */
         }
         if (val & 0x04) {
-            NCR710_DPRINTF("CTEST8: Clearing all FIFOs\n");
-            ncr710_dma_fifo_init(&s->dma_fifo);
+            NCR710_DPRINTF("CTEST8: Clearing SCSI FIFO\n");
             ncr710_scsi_fifo_init(&s->scsi_fifo);
             s->dstat |= NCR710_DSTAT_DFE;  /* Set DMA FIFO Empty */
         }
@@ -3000,7 +2783,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 #undef CASE_SET_REG32
 }
 
-
+/* END */
 /* Memory region operations for NCR710 registers */
 static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -3065,20 +2848,6 @@ static const VMStateDescription vmstate_ncr710_scsi_fifo = {
     }
 };
 
-static const VMStateDescription vmstate_ncr710_dma_fifo = {
-    .name = "ncr710_dma_fifo",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
-        VMSTATE_UINT8_ARRAY(data, NCR710_DMA_FIFO, NCR710_DMA_FIFO_SIZE),
-        VMSTATE_UINT8_ARRAY(parity, NCR710_DMA_FIFO, NCR710_DMA_FIFO_SIZE),
-        VMSTATE_INT32(head, NCR710_DMA_FIFO),
-        VMSTATE_INT32(tail, NCR710_DMA_FIFO),
-        VMSTATE_INT32(count, NCR710_DMA_FIFO),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 static const VMStateDescription vmstate_ncr710 = {
     .name = "ncr710",
     .version_id = 1,
@@ -3125,8 +2894,6 @@ static const VMStateDescription vmstate_ncr710 = {
         VMSTATE_UINT32(dsps, NCR710State),
         VMSTATE_UINT32(scratch, NCR710State),
         VMSTATE_UINT32(adder, NCR710State),
-        VMSTATE_STRUCT(dma_fifo, NCR710State, 1,
-            vmstate_ncr710_dma_fifo, NCR710_DMA_FIFO),
         VMSTATE_STRUCT(scsi_fifo, NCR710State, 1,
             vmstate_ncr710_scsi_fifo, NCR710_SCSI_FIFO),
         VMSTATE_UINT8(status, NCR710State),
@@ -3215,7 +2982,6 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &ncr710_scsi_info);
     s->ncr710.as = &address_space_memory;
 
-    ncr710_dma_fifo_init(&s->ncr710.dma_fifo);
     ncr710_scsi_fifo_init(&s->ncr710.scsi_fifo);
     s->ncr710.dcntl &= ~NCR710_DCNTL_COM;
     s->ncr710.scid = 0x80 | NCR710_HOST_ID;
