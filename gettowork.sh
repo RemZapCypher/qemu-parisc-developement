@@ -47,10 +47,11 @@ echo "Running QEMU..."
 
 #---Debian Normal config--- #
 
-gdb --args ./build/qemu-system-hppa \
+
+# gdb --args ./build/qemu-system-hppa \
+gdb -x breakpoints.gdb --args ./build/qemu-system-hppa \
     -trace "scsi_*" \
     -trace "ncr710_*" \
-    -trace "lasi_*" \
     -kernel OS_test/debian-10/vmlinux \
     -drive file=OS_test/debian-10/Linux-hppa-hdd-image.img,format=raw,if=scsi,media=disk \
     -nographic \
