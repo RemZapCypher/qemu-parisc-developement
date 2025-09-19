@@ -791,7 +791,7 @@ static void ncr710_stop_script(NCR710State *s)
 
 static void ncr710_update_irq(NCR710State *s)
 {
-    DPRINTF("NCR710_UPDATE_IRQ: dstat=0x%02x, sstat0=0x%02x, istat=0x%02x\n", 
+    DPRINTF("NCR710_UPDATE_IRQ: dstat=0x%02x, sstat0=0x%02x, istat=0x%02x\n",
             s->dstat, s->sstat0, s->istat);
     SysBusNCR710State *ncr710_dev = sysbus_from_ncr710(s);
     int level;
@@ -894,7 +894,7 @@ static void ncr710_script_dma_interrupt(NCR710State *s, int stat)
                 ncr710_stop_script(s);
                 ncr710_update_irq(s);
                 return;
-                
+
         case 0x00000520: /* Phase mismatch - data phase */
         case 0x00000020: /* Unexpected phase */
                 DPRINTF("Phase mismatch interrupt - pausing script for driver handling (dsps=0x%08x, active=%d->0)\n",
@@ -1352,18 +1352,18 @@ static void ncr710_do_command(NCR710State *s)
         DPRINTF("*** READ_TOC COMMAND DETECTED ***\n");
         DPRINTF("*** This command may not be properly supported by the target device ***\n");
         DPRINTF("*** If timeout occurs, it's a SCSI device issue, not NCR710 ***\n");
-        
+
         // Log full CDB for debugging
         DPRINTF("READ_TOC CDB: ");
         for (int i = 0; i < bytes_read && i < 10; i++) {
             printf("%02x ", buf[i]);
         }
         printf("\n");
-        
+
         // Log target device info
         id = (s->select_tag >> 8) & 0xff;
         DPRINTF("Target ID: %d, LUN: %d\n", idbitstonum(id), s->current_lun);
-        printf("*** NCR710: READ_TOC to target %d - if this hangs, it's a device compatibility issue ***\n", 
+        printf("*** NCR710: READ_TOC to target %d - if this hangs, it's a device compatibility issue ***\n",
                idbitstonum(id));
         fflush(stdout);
     }
@@ -1701,13 +1701,13 @@ static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count
     /* Direct memory to memory transfer using temporary buffer like reference implementation */
     #define NCR710_BUF_SIZE 4096
     uint8_t buf[NCR710_BUF_SIZE];
-    
+
     while (count) {
         int chunk = MIN(count, NCR710_BUF_SIZE);
-        
+
         /* Read from source */
         ncr710_dma_read(s, src, buf, chunk);
-        
+
         /* Write to destination */
         ncr710_dma_write(s, dest, buf, chunk);
 
@@ -1780,7 +1780,7 @@ static void ncr710_execute_script(NCR710State *s)
 
     DPRINTF("SCRIPT_EXEC START: DSP=0x%08x, active=%d, waiting=%d, istat=0x%02x\n",
             s->dsp, s->script_active, s->waiting, s->istat);
-    
+
     s->script_active = 1;
     s->scripts.running = true;
 
@@ -2070,7 +2070,7 @@ again:
             int jmp;
 
             if ((insn & 0x002e0000) != 0) {
-                DPRINTF("TRANSFER CONTROL: insn=0x%08x sfbr=0x%02x addr=0x%08x\n", 
+                DPRINTF("TRANSFER CONTROL: insn=0x%08x sfbr=0x%02x addr=0x%08x\n",
                         insn, s->sfbr, addr);
             }
             if (s->sstat0 & NCR710_SSTAT0_STO) {
@@ -2245,7 +2245,7 @@ again:
         return;
     }
 
-    DPRINTF("SCRIPT_EXEC END: stopped (active=%d, waiting=%d, DSP=0x%08x, istat=0x%02x)\n", 
+    DPRINTF("SCRIPT_EXEC END: stopped (active=%d, waiting=%d, DSP=0x%08x, istat=0x%02x)\n",
             s->script_active, s->waiting, s->dsp, s->istat);
 }
 
@@ -2314,18 +2314,17 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_DSTAT_REG: /* DSTAT */
             ret = s->dstat;
-            DPRINTF("DSTAT read: 0x%02x (script_active=%d, waiting=%d, dsps=0x%08x)\n", 
+            DPRINTF("DSTAT read: 0x%02x (script_active=%d, waiting=%d, dsps=0x%08x)\n",
                     ret, s->script_active, s->waiting, s->dsps);
             ret |= NCR710_DSTAT_DFE;
-            
+
             bool had_script_interrupt = (s->dstat & NCR710_DSTAT_SIR) != 0;
             bool was_completion = (s->dsps == 0x00000401);  // Good status completion
-            
+
             s->dstat = 0;  /* Clear DSTAT on read */
             s->istat &= ~NCR710_ISTAT_DIP;
             ncr710_update_irq(s);
-            
-            // ADD THIS DEBUG:
+
             if (was_completion) {
                 DPRINTF("*** COMPLETION INTERRUPT HANDLED - SCRIPT STAYS PAUSED ***\n");
                 DPRINTF("*** DRIVER SHOULD PROCESS COMPLETION AND START NEXT COMMAND ***\n");
@@ -2643,7 +2642,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
     case NCR710_ISTAT_REG: /* ISTAT */
         DPRINTF("ISTAT WRITE: val=0x%02x (prev=0x%02x, ABRT=%d, SIGP=%d, script_active=%d, waiting=%d)\n",
-                val, s->istat, !!(val & NCR710_ISTAT_ABRT), !!(val & NCR710_ISTAT_SIGP), 
+                val, s->istat, !!(val & NCR710_ISTAT_ABRT), !!(val & NCR710_ISTAT_SIGP),
                 s->script_active, s->waiting);
         if (val & NCR710_ISTAT_ABRT) {
             NCR710_DPRINTF("NCR710: ISTAT ABRT bit set - aborting SCRIPTS\n");
@@ -2781,7 +2780,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 #undef CASE_SET_REG32
 }
 
-/* END */
 /* Memory region operations for NCR710 registers */
 static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
