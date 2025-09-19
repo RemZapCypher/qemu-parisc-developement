@@ -35,15 +35,15 @@
 
 #ifdef DEBUG_NCR710
 #define DPRINTF(fmt, ...) \
-    fprintf(stderr,"QEMU: ncr710: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: " fmt, ## __VA_ARGS__)
 #define BADF(fmt, ...) \
-    fprintf(stderr,"QEMU: ncr710: error: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: error: " fmt, ## __VA_ARGS__)
 #define NCR710_DPRINTF(fmt, ...) \
-    fprintf(stderr,"QEMU: ncr710: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: " fmt, ## __VA_ARGS__)
 #else
 #define DPRINTF(fmt, ...) do {} while(0)
 #define BADF(fmt, ...) \
-    fprintf(stderr,"ncr710: error: " fmt, ## __VA_ARGS__)
+    fprintf(stderr,"QEMU: error: " fmt, ## __VA_ARGS__)
 #define NCR710_DPRINTF(fmt, ...) do {} while(0)
 #endif
 
@@ -185,21 +185,11 @@
 #define NCR710_HOST_ID          7
 #define NCR710_MAX_MSGIN_LEN    8
 
-#define NCR710_DMA_FIFO_SIZE    64
 #define NCR710_SCSI_FIFO_SIZE   8
 
 /* Forward declarations */
 typedef struct NCR710State NCR710State;
 typedef struct NCR710Request NCR710Request;
-
-/* DMA FIFO structure - 64 bytes with parity */
-typedef struct {
-    uint8_t data[NCR710_DMA_FIFO_SIZE];     /* DMA FIFO buffer (64 bytes) */
-    uint8_t parity[NCR710_DMA_FIFO_SIZE];   /* Parity bits for each byte */
-    int head;                                /* Write pointer */
-    int tail;                                /* Read pointer */
-    int count;                               /* Number of valid entries */
-} NCR710_DMA_FIFO;
 
 /* SCSI FIFO structure - 8 bytes with parity */
 typedef struct {
@@ -207,13 +197,6 @@ typedef struct {
     uint8_t parity[NCR710_SCSI_FIFO_SIZE];  /* Parity bits for each byte */
     int count;                               /* Number of valid entries */
 } NCR710_SCSI_FIFO;
-
-/* Combined FIFO structure for NCR53C710 */
-typedef struct {
-    NCR710_DMA_FIFO dma;
-    NCR710_SCSI_FIFO scsi;
-    uint8_t status;
-} NCR710FIFO;
 
 /* Scripts state structure */
 typedef struct {
@@ -291,7 +274,6 @@ struct NCR710State {
     uint32_t adder;
 
     /* FIFO */
-    NCR710_DMA_FIFO dma_fifo;   /* Changed from NCR710FIFO fifo */
     NCR710_SCSI_FIFO scsi_fifo;
 
     /* Current SCSI command state */
