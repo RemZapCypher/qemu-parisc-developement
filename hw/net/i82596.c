@@ -139,10 +139,10 @@ static int rx_copybreak = 100;
 #define RX_COLLISIONS         0x0001  /* Collision detected during frame reception */
 #define RX_LENGTH_ERRORS      0x0080  /* Frame length error during reception */
 #define RX_OVER_ERRORS        0x0100  /* Receiver overflow error */
-#define RX_FIFO_ERRORS        0x0200  /* FIFO buffer overflow during reception */
-#define RX_FRAME_ERRORS       0x0400  /* Frame alignment error */
-#define RX_CRC_ERRORS         0x0800  /* CRC checksum error in received frame */
-#define RX_LENGTH_ERRORS_ALT  0x1000  /* Duplicate definition - frame length error flag */
+#define RX_FIFO_ERRORS        0x0400  /* FIFO buffer overflow during reception */
+#define RX_FRAME_ERRORS       0x0800  /* Frame alignment error */
+#define RX_CRC_ERRORS         0x1000  /* CRC checksum error in received frame */
+#define RX_LENGTH_ERRORS_ALT  0x2000  /* Duplicate definition - frame length error flag */
 #define RFD_STATUS_TRUNC      0x0020  /* Received frame truncated due to buffer size */
 #define RFD_STATUS_NOBUFS     0x0200  /* No buffer resources available for frame reception */
 
@@ -302,7 +302,18 @@ static void update_scb_status(I82596State *s)
         | (s->cu_status << 8) | (s->rx_status << 4);
     set_uint16(s->scb, s->scb_status);
 
-
+    /* Update all statistical counters in SCB */
+    set_uint32(s->scb + 16, s->crc_err);        /* CRC error counter */
+    set_uint32(s->scb + 18, s->align_err);      /* Alignment error counter */
+    set_uint32(s->scb + 20, s->resource_err);   /* Resource error counter */
+    set_uint32(s->scb + 22, s->over_err);       /* Overrun error counter */
+    set_uint32(s->scb + 24, s->rcvdt_err);      /* Receive data timeout counter */
+    set_uint32(s->scb + 26, s->short_fr_error); /* Short frame error counter */
+    
+    /* Update TX-related counters */
+    set_uint32(s->scb + 28, s->tx_aborted_errors);  /* TX aborted errors */
+    set_uint32(s->scb + 32, s->tx_collisions);      /* Total collisions */
+    set_uint32(s->scb + 36, s->tx_good_frames);     /* Successfully transmitted frames */
 }
 
 static bool i82596_check_medium_status(I82596State *s)
@@ -334,24 +345,163 @@ static int i82596_csma_backoff(I82596State *s, int retry_count)
     backoff_time = slot_count * CSMA_SLOT_TIME;
 
     DBG(printf("CSMA/CD: Backing off for %d microseconds (retry %d)\n",
-              backoff_time, retry_count));
+               backoff_time, retry_count));
 
     return backoff_time;
 }
 
+/* Calculate CRC16 for packet data */
+static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len)
+{
+    uint16_t crc = 0xFFFF;
+    size_t i, j;
+    
+    for (i = 0; i < len; i++) {
+        crc ^= data[i] << 8;
+        for (j = 0; j < 8; j++) {
+            if (crc & 0x8000) {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
 
+/* Calculate and append CRC to transmit buffer */
+static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
+{
+    if (I596_CRC16_32) {
+        /* Use CRC-32 */
+        uint32_t crc = crc32(~0, buffer, len);
+        crc = cpu_to_be32(crc);
+        memcpy(&buffer[len], &crc, sizeof(crc));
+        return len + sizeof(crc);
+    } else {
+        /* Use CRC-16 */
+        uint16_t crc = i82596_calculate_crc16(buffer, len);
+        crc = cpu_to_be16(crc);
+        memcpy(&buffer[len], &crc, sizeof(crc));
+        return len + sizeof(crc);
+    }
+}
+
+/* Validate and verify CRC for received packets */
+static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len)
+{
+    if (I596_CRC16_32) {
+        /* Verify CRC-32 */
+        if (len < 4) return false;
+        uint32_t received_crc = be32_to_cpu(*(uint32_t *)(data + len - 4));
+        uint32_t calculated_crc = crc32(~0, data, len - 4);
+        return received_crc == calculated_crc;
+    } else {
+        /* Verify CRC-16 */
+        if (len < 2) return false;
+        uint16_t received_crc = be16_to_cpu(*(uint16_t *)(data + len - 2));
+        uint16_t calculated_crc = i82596_calculate_crc16(data, len - 2);
+        return received_crc == calculated_crc;
+    }
+}
+
+/* Update TX status and counters in SCB */
+static void i82596_update_tx_counters(I82596State *s, uint16_t tx_status)
+{
+    if (tx_status & TX_COLLISIONS) {
+        s->tx_collisions++;
+        s->collision_events++;
+    }
+    
+    if (tx_status & TX_ABORTED_ERRORS) {
+        s->tx_aborted_errors++;
+        set_uint32(s->scb + 28, s->tx_aborted_errors);  /* Update SCB aborted errors counter */
+    }
+    
+    if (!(tx_status & (TX_ABORTED_ERRORS | TX_CARRIER_ERRORS))) {
+        s->tx_good_frames++;
+    }
+    
+    /* Update collision counter in SCB */
+    set_uint32(s->scb + 32, s->tx_collisions);
+    
+    /* Update good frames counter in SCB */
+    set_uint32(s->scb + 36, s->tx_good_frames);
+    
+    DBG(printf("TX counters updated: collisions=%d, aborted=%d, good=%d\n",
+               s->tx_collisions, s->tx_aborted_errors, s->tx_good_frames));
+}
+
+/* Update RX frame statistics */
+static void i82596_update_rx_statistics(I82596State *s, bool pkt_completed, bool crc_ok, size_t frame_size)
+{
+    /* Update frame counters */
+    s->total_frames++;
+    
+    if (pkt_completed && crc_ok) {
+        s->total_good_frames++;
+    }
+    
+    /* Check for short frames */
+    if (frame_size < I596_MIN_FRAME_LEN) {
+        s->short_fr_error++;
+    }
+    
+    /* Update SCB statistics immediately */
+    set_uint32(s->scb + 40, s->total_frames);      /* Total frames received */
+    set_uint32(s->scb + 44, s->total_good_frames); /* Good frames received */
+    set_uint32(s->scb + 26, s->short_fr_error);    /* Short frame errors */
+    
+    DBG(printf("RX stats updated: total=%d, good=%d, short_errors=%d\n",
+               s->total_frames, s->total_good_frames, s->short_fr_error));
+}
+
+/* Update SCB IRQ status */
+static void i82596_update_scb_irq(I82596State *s, bool send_irq)
+{
+    update_scb_status(s);
+    if (send_irq) {
+        qemu_set_irq(s->irq, 1);
+    }
+}
+
+/* Update CU status and generate interrupts as needed */
+static void i82596_update_cu_status(I82596State *s, uint16_t cmd_status, bool generate_interrupt)
+{
+    if (cmd_status & STAT_C) {
+        s->scb_status |= SCB_STATUS_CX;  /* Command finished */
+    }
+    
+    if (generate_interrupt) {
+        s->scb_status |= SCB_STATUS_CNA;  /* CU left active state */
+        i82596_update_scb_irq(s, true);
+    }
+    
+    update_scb_status(s);
+}
 static void i82596_xmit(I82596State *s, uint32_t addr)
 {
     uint32_t tdb_p; /* Transmit Buffer Descriptor */
-    uint16_t cmd;
+    uint16_t cmd, tx_status = 0;
     int insert_crc;
     int retry_count = 0;
     bool medium_available = false;
-    uint16_t tx_status = 0;
+    bool transmission_success = true;
+    uint32_t total_len = 0;
+    uint8_t *tx_buffer_ptr = s->tx_buffer;
+    size_t buffer_pos = 0;
+    bool simplified_mode = false;
 
+    /* Read command and TBD pointer */
     tdb_p = get_uint32(addr + 8);
     cmd = get_uint16(addr + 2);
     insert_crc = (I596_NOCRC_INS == 0) && ((cmd & 0x10) == 0) && !I596_LOOPBACK;
+    
+    /* Check if this is simplified or flexible mode */
+    simplified_mode = !(cmd & CMD_FLEX);
+
+    DBG(printf("TX: Starting transmission, TBD=0x%08x, cmd=0x%04x, mode=%s\n",
+               tdb_p, cmd, simplified_mode ? "simplified" : "flexible"));
 
     /* CSMA/CD: Only perform medium polling in half-duplex mode */
     if (!I596_FULL_DUPLEX && !I596_LOOPBACK) {
@@ -379,9 +529,8 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
         /* Check if we exceeded max retries */
         if (retry_count >= CSMA_MAX_RETRIES) {
             DBG(printf("CSMA/CD: Excessive collisions, transmission aborted\n"));
-            /* Record excessive collision error */
             tx_status |= TX_ABORTED_ERRORS;
-            /* Still proceed with simulated transmission but mark it as failed */
+            transmission_success = false;
         }
 
         /* Record collision count in status */
@@ -392,60 +541,142 @@ static void i82596_xmit(I82596State *s, uint32_t addr)
         }
     }
 
-    while (tdb_p != I596_NULL) {
-        uint16_t size, len;
-        uint32_t tba;
-
-        size = get_uint16(tdb_p);
-        len = size & SIZE_MASK;
-        tba = get_uint32(tdb_p + 8);
-        trace_i82596_transmit(len, tba);
-
-        if (s->nic && len) {
-            uint16_t new_len;
-            new_len = len + 4;
-            assert(new_len <= sizeof(s->tx_buffer));
-            address_space_read(&address_space_memory, tba,
-                MEMTXATTRS_UNSPECIFIED, s->tx_buffer, len);
-
-            if (I596_NO_SRC_ADD_IN == 0) {
-                memcpy(&s->tx_buffer[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
-            }
-
-            DBG(printf("i82596_transmit: insert_crc = %d  insert SRC = %d\n",
-                        insert_crc, I596_NO_SRC_ADD_IN == 0));
-            if (insert_crc) {
-                uint32_t crc = crc32(~0, s->tx_buffer, len);
-                crc = cpu_to_be32(crc);
-                memcpy(&s->tx_buffer[len], &crc, sizeof(crc));
-                len += sizeof(crc);
-            }
-
-            DBG(PRINT_PKTHDR("Send", &s->tx_buffer));
-            DBG(printf("Sending %d bytes (crc_inserted=%d)\n", len, insert_crc));
-
-            /* Store transmission length for statistics */
-            s->last_tx_len = len;
-            switch (I596_LOOPBACK) {
-            case 0:     /* no loopback, send packet */
-                if (tx_status) {
-                    set_uint16(tdb_p + 2, tx_status);  /* Write collision status */
-                }
-                qemu_send_packet_raw(qemu_get_queue(s->nic), s->tx_buffer, len);
-                break;
-            default:
-                i82596_receive(qemu_get_queue(s->nic), s->tx_buffer, len);
-                break;
-            }
+    /* Process TBD chain - handle both simplified and flexible modes */
+    if (simplified_mode) {
+        /* Simplified mode: Data is in the command block itself */
+        uint16_t frame_len = get_uint16(addr + 12);  /* Frame length from command */
+        uint32_t data_addr = addr + 16;  /* Data starts after command header */
+        
+        DBG(printf("TX: Simplified mode, frame_len=%d\n", frame_len));
+        
+        if (frame_len > 0 && frame_len <= PKT_BUF_SZ - 8) {
+            address_space_read(&address_space_memory, data_addr,
+                              MEMTXATTRS_UNSPECIFIED, tx_buffer_ptr, frame_len);
+            total_len = frame_len;
+        } else {
+            DBG(printf("TX: Invalid frame length in simplified mode: %d\n", frame_len));
+            tx_status |= TX_ABORTED_ERRORS;
+            transmission_success = false;
         }
-        if (size & I596_EOF) {
-            qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    } else {
+        /* Flexible mode: Process TBD chain */
+        while (tdb_p != I596_NULL && transmission_success) {
+            uint16_t tbd_size, tbd_len;
+            uint32_t tbd_addr;
+
+            /* Translate TBD address */
+            tdb_p = i82596_translate_address(s, tdb_p, false);
+            if (tdb_p == 0 || tdb_p == I596_NULL) {
+                DBG(printf("TX: Invalid TBD address\n"));
+                tx_status |= TX_ABORTED_ERRORS;
+                transmission_success = false;
+                break;
+            }
+
+            /* Read TBD fields */
+            tbd_size = get_uint16(tdb_p);
+            tbd_len = tbd_size & SIZE_MASK;
+            tbd_addr = get_uint32(tdb_p + 8);
+            tbd_addr = i82596_translate_address(s, tbd_addr, true);
+
+            DBG(printf("TX: Processing TBD 0x%08x, size=0x%04x, len=%d, addr=0x%08x\n",
+                       tdb_p, tbd_size, tbd_len, tbd_addr));
+
+            /* Check buffer space */
+            if (buffer_pos + tbd_len > PKT_BUF_SZ - 8) {
+                DBG(printf("TX: Buffer overflow, truncating frame\n"));
+                tx_status |= TX_ABORTED_ERRORS;
+                transmission_success = false;
+                break;
+            }
+
+            /* Copy data from TBD buffer */
+            if (tbd_len > 0 && tbd_addr != 0 && tbd_addr != I596_NULL) {
+                address_space_read(&address_space_memory, tbd_addr,
+                                  MEMTXATTRS_UNSPECIFIED, 
+                                  tx_buffer_ptr + buffer_pos, tbd_len);
+                buffer_pos += tbd_len;
+                total_len += tbd_len;
+            }
+
+            /* Check for end of frame */
+            if (tbd_size & I596_EOF) {
+                DBG(printf("TX: End of frame marker found\n"));
+                break;
+            }
+
+            /* Get next TBD */
+            tdb_p = get_uint32(tdb_p + 4);
+        }
+    }
+
+    /* Process the frame if transmission should proceed */
+    if (transmission_success && total_len > 0) {
+        /* Insert source MAC address if required */
+        if (I596_NO_SRC_ADD_IN == 0 && total_len >= ETH_ALEN * 2) {
+            memcpy(&tx_buffer_ptr[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
+        }
+
+        /* Add padding if frame is too short */
+        if (I596_PADDING && total_len < I596_MIN_FRAME_LEN) {
+            size_t pad_len = I596_MIN_FRAME_LEN - total_len;
+            memset(tx_buffer_ptr + total_len, 0, pad_len);
+            total_len = I596_MIN_FRAME_LEN;
+            DBG(printf("TX: Added %zu bytes of padding\n", pad_len));
+        }
+
+        /* Calculate and append CRC if required */
+        if (insert_crc) {
+            total_len = i82596_append_crc(s, tx_buffer_ptr, total_len);
+            DBG(printf("TX: CRC appended, total length now %d\n", (int)total_len));
+        }
+
+        /* Store transmission length for statistics */
+        s->last_tx_len = total_len;
+
+        DBG(PRINT_PKTHDR("TX Send", tx_buffer_ptr));
+        DBG(printf("TX: Sending %d bytes (crc_inserted=%d)\n", (int)total_len, insert_crc));
+
+        /* Transmit the frame */
+        switch (I596_LOOPBACK) {
+        case 0:     /* No loopback, send packet */
+            if (s->nic) {
+                qemu_send_packet_raw(qemu_get_queue(s->nic), tx_buffer_ptr, total_len);
+            }
+            break;
+        default:    /* Loopback mode */
+            i82596_receive(qemu_get_queue(s->nic), tx_buffer_ptr, total_len);
             break;
         }
 
-        /* get next buffer pointer */
-        tdb_p = get_uint32(tdb_p + 4);
+        /* Update successful transmission counters */
+        if (!(tx_status & TX_ABORTED_ERRORS)) {
+            s->tx_good_frames++;
+        }
     }
+
+    /* Update command status */
+    uint16_t cmd_status = STAT_C | STAT_OK;  /* Command complete and OK */
+    if (!transmission_success) {
+        cmd_status &= ~STAT_OK;  /* Clear OK bit on failure */
+        cmd_status |= STAT_A;    /* Set abort bit */
+    }
+
+    /* Write status back to command block */
+    set_uint16(addr, cmd_status);
+    if (tx_status) {
+        set_uint16(addr + 14, tx_status);  /* Write detailed TX status */
+    }
+
+    /* Update counters and CU status */
+    i82596_update_tx_counters(s, tx_status);
+    
+    /* Generate interrupt if requested */
+    bool generate_interrupt = (cmd & CMD_INTR) != 0;
+    i82596_update_cu_status(s, cmd_status, generate_interrupt);
+
+    DBG(printf("TX: Transmission complete, status=0x%04x, tx_status=0x%04x\n",
+               cmd_status, tx_status));
 }
 
 static void i82596_cleanup(I82596State *s)
@@ -551,6 +782,22 @@ static void i82596_s_reset(I82596State *s)
 
     /* Clear the config array */
     memset(s->config, 0, sizeof(s->config));
+
+    /* Reset all statistical counters */
+    s->crc_err = 0;
+    s->align_err = 0;
+    s->resource_err = 0;
+    s->over_err = 0;
+    s->rcvdt_err = 0;
+    s->short_fr_error = 0;
+    s->total_frames = 0;
+    s->total_good_frames = 0;
+    s->collision_events = 0;
+    s->total_collisions = 0;
+    s->tx_good_frames = 0;
+    s->tx_collisions = 0;
+    s->tx_aborted_errors = 0;
+    s->last_tx_len = 0;
 
     /* Bus configurations */
     s->t_on = 0xFFFF; /* T-ON initially */
@@ -1078,8 +1325,8 @@ static void i82596_self_test(I82596State *s, uint32_t val)
     set_uint32(val, 0xFFC00000);  /* Success signature */
     set_uint32(val + 4, 0);
 
-    s->scb_status &= ~STAT_OK;
-    s->scb_status |= STAT_OK;
+    s->scb_status &= ~SCB_STATUS_CNA;
+    s->scb_status |= SCB_STATUS_CNA;
 
     qemu_set_irq(s->irq, 1);
     update_scb_status(s);
@@ -1112,24 +1359,38 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
 
 static void i82596_record_error(I82596State *s, uint16_t error_type)
 {
-    uint32_t counter_addr;
-    uint16_t count;
-
-    /* Map error types to counter addresses */
+    /* Update local counters first */
     switch (error_type) {
+    case RX_CRC_ERRORS:
+        s->crc_err++;
+        break;
+    case RX_LENGTH_ERRORS:
+    case RX_LENGTH_ERRORS_ALT:
+        s->align_err++;
+        break;
     case RFD_STATUS_NOBUFS:
-        counter_addr = s->scb + 20;  /* No buffer resources counter */
+        s->resource_err++;
         break;
-        case RFD_STATUS_TRUNC:
-        counter_addr = s->scb + 22;  /* Truncated frames counter */
+    case RX_OVER_ERRORS:
+    case RX_FIFO_ERRORS:
+        s->over_err++;
         break;
-        default:
+    case RFD_STATUS_TRUNC:
+        s->short_fr_error++;
+        break;
+    default:
+        DBG(printf("Unknown error type: 0x%04x\n", error_type));
         return;
     }
 
-    /* Increment the appropriate counter */
-    count = get_uint16(counter_addr);
-    set_uint16(counter_addr, count + 1);
+    /* Update SCB counters immediately */
+    set_uint32(s->scb + 16, s->crc_err);        /* CRC error counter */
+    set_uint32(s->scb + 18, s->align_err);      /* Alignment error counter */
+    set_uint32(s->scb + 20, s->resource_err);   /* Resource error counter */
+    set_uint32(s->scb + 22, s->over_err);       /* Overrun error counter */
+    
+    DBG(printf("Error recorded: type=0x%04x, crc=%d, align=%d, resource=%d, over=%d\n",
+               error_type, s->crc_err, s->align_err, s->resource_err, s->over_err));
 }
 
 bool i82596_can_receive(NetClientState *nc)
@@ -1274,14 +1535,6 @@ static bool i82596_monitor(I82596State *s, const uint8_t *buf, size_t sz, bool p
     }
 }
 
-static void i82596_update_scb_irq(I82596State *s, bool send_irq)
-{
-    update_scb_status(s);
-    if (send_irq) {
-        qemu_set_irq(s->irq, 1);
-    }
-}
-
 static void i82596_update_rx_state(I82596State *s, int new_state)
 {
     s->rx_status = new_state;
@@ -1302,20 +1555,23 @@ static void i82596_update_rx_state(I82596State *s, int new_state)
 ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 {
     I82596State *s = qemu_get_nic_opaque(nc);
-    uint32_t rfa_pointer, rfd_addr_head, rfd_addr, next_rfd, rbd_addr;
-    uint16_t status = 0, command, sf_bit;
+    uint32_t rfa_pointer, rfd_addr, next_rfd, rbd_addr;
+    uint16_t status = 0, command;
     uint16_t is_broadcast = 0;
     bool packet_completed = true;
+    bool simplified_mode = false;
     size_t target_size = size;
-    size_t bytes_copied, rfd_write_area;
-    uint32_t crc;
-    uint8_t *crc_ptr = NULL;
+    size_t bytes_copied = 0;
+    size_t crc_size = I596_CRC16_32 ? 4 : 2;
+    uint8_t *packet_data = (uint8_t *)buf;
+    bool crc_valid = true;
 
     DBG(printf("====== i82596_receive() START ======\n"));
     DBG(PRINT_PKTHDR("[RX] packet", buf));
 
-    /* VAlidation */
+    /* Validate receive state and link status */
     if (!I596_FULL_DUPLEX && !s->throttle_state) {
+        DBG(printf("RX: Rejected - throttle off in half duplex\n"));
         return size; /* Pretend we received it */
     }
 
@@ -1324,235 +1580,311 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         return -1;
     }
 
+    /* Apply packet filtering */
     bool passes_filter = i82596_check_packet_filter(s, buf, &is_broadcast);
 
+    /* Handle monitor mode */
     if (!i82596_monitor(s, buf, size, passes_filter)) {
         DBG(printf("Packet handled by monitor mode, not processing further\n"));
         return size;
     }
 
-    /* Only continue normal processing if monitor mode allows it */
+    /* Only continue normal processing if packet passes filter */
     if (!passes_filter) {
         DBG(printf("Packet rejected by filter\n"));
         return size;
     }
 
-    /* Getting the pointers to the correct positions */
+    /* Handle CRC verification and processing */
+    if (I596_LOOPBACK && size > crc_size) {
+        /* Only verify CRC in loopback mode where we know CRC is present */
+        crc_valid = i82596_verify_crc(s, buf, size);
+        if (!crc_valid) {
+            DBG(printf("RX: CRC verification failed in loopback\n"));
+            status |= RX_CRC_ERRORS;
+            i82596_record_error(s, RX_CRC_ERRORS);
+            s->crc_err++;
+            
+            if (!SAVE_BAD_FRAMES) {
+                return size;  /* Discard frame with bad CRC */
+            }
+        }
+        target_size = size - crc_size;  /* Remove existing CRC */
+    } else {
+        /* For normal network reception, assume CRC is good (handled by physical layer) */
+        crc_valid = true;
+        target_size = size;  /* No CRC to remove */
+        DBG(printf("RX: Normal network reception, assuming good CRC\n"));
+    }
+
+    /* Get RFD pointer and validate */
     rfa_pointer = get_uint32(s->scb + 8);
     rfd_addr = rfa_pointer;
-    rfd_addr_head = rfd_addr;
     rfd_addr = i82596_translate_address(s, rfd_addr, false);
 
-    if (rfd_addr == 0 || rfd_addr == I596_NULL) { /*Check if NULL */
+    if (rfd_addr == 0 || rfd_addr == I596_NULL) {
         DBG(printf("No RFD available, setting NO_RESOURCES state\n"));
         i82596_update_rx_state(s, RX_NO_RESOURCES);
+        s->resource_err++;
         return -1;
     }
 
+    /* Read RFD command and determine mode */
     command = get_uint16(rfd_addr + 2);
-    sf_bit = !(command & CMD_FLEX);  /* SF bit at 3 bit of ODD word */
+    simplified_mode = !(command & CMD_FLEX);
 
+    DBG(printf("RX: Processing in %s mode, RFD=0x%08x, cmd=0x%04x\n",
+               simplified_mode ? "simplified" : "flexible", rfd_addr, command));
 
-    do{
-        next_rfd = get_uint32(rfd_addr + 4);
+    /* Check if RFD is busy */
+    uint16_t rfd_status = get_uint16(rfd_addr);
+    if (rfd_status & STAT_B) {
+        DBG(printf("RX: RFD is busy, cannot receive\n"));
+        return -1;
+    }
 
-        if (status & STAT_B) {
-            return -1;
-        }
+    /* Process frame based on mode */
+    if (simplified_mode) {
+        /* Simplified mode: All data goes into RFD */
+        uint16_t rfd_size = get_uint16(rfd_addr + 14);  /* Available space in RFD */
+        uint16_t data_offset = 16;  /* Data area offset in RFD */
+        
+        DBG(printf("RX: Simplified mode, RFD size=%d, target_size=%zu\n", rfd_size, target_size));
 
-        uint16_t rfd_size = get_uint16(rfd_addr + 14);  /* Size field */
-
-        if (rfd_size % 2 != 0) { /* Should always be even */
+        /* Validate RFD size */
+        if (rfd_size % 2 != 0) {
             DBG(printf("RFD size is not even, rejecting packet\n"));
             status |= RX_LENGTH_ERRORS;
             i82596_record_error(s, RX_LENGTH_ERRORS);
+            s->align_err++;
             return -1;
         }
 
-
-        uint16_t data_offset = 30;  /* Yes, Data starts after header fields */
-        /*
-         * Write starts from actual count?
-         * Seems to work.
-         */
-        rfd_write_area= rfd_addr + 12;
-        if (sf_bit || I596_LOOPBACK) {
-            uint16_t data_size = MAX(target_size, rfd_size);
-
-            address_space_write(&address_space_memory, rfd_write_area,
-                               MEMTXATTRS_UNSPECIFIED, buf, data_size);
-            target_size -= data_size;
-
-            /* Check if frame was truncated */
-            if ((data_size < size - data_offset) && !I596_LOOPBACK) {
-                DBG(printf("Frame truncated in simplified mode\n"));
-                status |= RFD_STATUS_TRUNC;
-                i82596_record_error(s, RFD_STATUS_TRUNC);
-
-                if (!SAVE_BAD_FRAMES) {
-                    packet_completed = false;
-                }
-            }
-        } else {
-            /* FLEXIBLE MODE: Data split between RFD (till rx_copybreak) and then RBDs */
-            bytes_copied = 0;
-            bool out_of_buffers = false;
-
-            /* Copy initial data to RFD if size > 0 */
-            uint16_t rfd_data_size = MIN(rx_copybreak, rfd_size);
-            if (rfd_data_size > 0) {
-                address_space_write(&address_space_memory, rfd_addr + 30,
-                                  MEMTXATTRS_UNSPECIFIED, buf, rfd_data_size);
-                bytes_copied += rfd_data_size;
-                target_size -= bytes_copied;
-                /* Update RFD actual count */
-                set_uint16(rfd_addr + 12, rfd_data_size);
-            } else {
-                bytes_copied = 0;
-            }
-
-            /* Process RBDs only if we haven't copied the entire frame yet */
-            if (bytes_copied < target_size) {
-                rbd_addr = get_uint32(rfd_addr + 8);
-                rbd_addr = i82596_translate_address(s, rbd_addr, false);
-
-                if (rbd_addr == I596_NULL || rbd_addr == 0) {
-                    DBG(printf("No RBD for flexible mode\n"));
-                    status |= RFD_STATUS_NOBUFS;
-                    i82596_record_error(s, RFD_STATUS_NOBUFS);
-                    i82596_update_rx_state(s, RX_NO_RESOURCES);
-                    if (!SAVE_BAD_FRAMES) {
-                        packet_completed = false;
-                    }
-                } else {
-
-                    /* Process data through RBD chain */
-                    while (bytes_copied < target_size && rbd_addr != I596_NULL) {
-                        uint16_t rbd_status, buf_size;
-                        uint32_t buf_addr, next_rbd;
-
-                        /* Read RBD fields */
-                        rbd_status = get_uint16(rbd_addr);
-                        buf_addr = get_uint32(rbd_addr + 8);  /* Buffer address */
-                        buf_addr = i82596_translate_address(s, buf_addr, true);
-                        buf_size = get_uint16(rbd_addr + 12) & SIZE_MASK; /* Size field */
-
-                        DBG(printf("RBD at %08x, buf=%08x, size=%d\n",
-                                  rbd_addr, buf_addr, buf_size));
-
-                        /* Copy data to buffer */
-                        uint16_t to_copy = MIN(target_size, buf_size);
-                        address_space_write(&address_space_memory, buf_addr,
-                                          MEMTXATTRS_UNSPECIFIED, buf + bytes_copied, to_copy);
-                        bytes_copied += to_copy;
-                        target_size -= to_copy;
-
-                        uint16_t actual_count = to_copy;
-                        if (bytes_copied >= target_size) {
-                            actual_count |= I596_EOF;  /* EOF flag */
-                        }
-                        set_uint16(rbd_addr, actual_count | CMD_SUSP);  /* F bit */
-
-                        /* Move to next RBD if needed */
-                        if (bytes_copied < target_size) {
-                            /* Check for end of RBD list */
-                            if (rbd_status & CMD_EOL) {  /* EL bit */
-                                out_of_buffers = true;
-                                break;
-                            }
-
-                            next_rbd = get_uint32(rbd_addr + 4);
-                            next_rbd = i82596_translate_address(s, next_rbd, true);
-
-                            /* Check for NULL & Cyclic reference*/
-                            if (next_rbd == 0 || next_rbd == I596_NULL || next_rbd == rbd_addr) {
-                                out_of_buffers = true;
-                                status |= RFD_STATUS_NOBUFS;
-                                printf(" out of buffers, next_rbd=%08x\n", next_rbd);
-                                break;
-                            }
-                            rbd_addr = next_rbd;
-                        }
-                    }
-
-                    /* Handle resource exhaustion */
-                    if (out_of_buffers && bytes_copied < target_size) {
-                        DBG(printf("Out of buffers, frame truncated\n"));
-                        status |= RFD_STATUS_NOBUFS;
-                        i82596_record_error(s, RFD_STATUS_NOBUFS);
-                        i82596_update_rx_state(s, RX_NO_RESOURCES);
-                        if (!SAVE_BAD_FRAMES) {
-                            packet_completed = false;
-                        }
-                        rfd_addr= rfd_addr_head;  /* Reset to head RFD */
-                    }
-
-                    next_rfd = get_uint32(rfd_addr + 4);
-                    next_rfd = i82596_translate_address(s, next_rfd, false);
-                    if (next_rfd != I596_NULL && next_rfd != 0) {
-                        if (rbd_addr != I596_NULL) {
-                            DBG(printf("Updating next RFD 0x%08x to point to remaining RBD 0x%08x\n",
-                                   next_rfd, rbd_addr));
-                            set_uint32(next_rfd + 8, rbd_addr);
-                        } else {
-                            DBG(printf("Next RFD 0x%08x has no RBDs left, set NULL\n", next_rfd));
-                            set_uint32(next_rfd + 8, I596_NULL);
-                        }
-                    }
-
-                }
-            }
+        /* Check if frame fits in RFD */
+        if (target_size > rfd_size) {
+            DBG(printf("Frame too large for RFD in simplified mode\n"));
+            status |= RFD_STATUS_TRUNC;
+            target_size = rfd_size;
+            packet_completed = !SAVE_BAD_FRAMES ? false : true;
         }
-    } while (target_size > 0);
 
-    if (I596_CRCINM && I596_LOOPBACK && !sf_bit) {
-        crc = crc32(~0, buf, 4);
-        crc = cpu_to_be32(crc);
-        crc_ptr = (uint8_t *) &crc;
-        size += 4;
-        DBG(printf("CRC: %08x\n", crc));
-        if (sf_bit){
-            address_space_write(&address_space_memory, rfd_addr + 30 + size - 4,
-                               MEMTXATTRS_UNSPECIFIED, crc_ptr, 4);
-        } else {
-            if (rbd_addr != I596_NULL) {
-                uint32_t rbd_crc_addr = get_uint32(rbd_addr + 8) + bytes_copied;
-                address_space_write(&address_space_memory, rbd_crc_addr,
-                                   MEMTXATTRS_UNSPECIFIED, crc_ptr, 4);
-            } else {
-                DBG(printf("[ERROR]: No RBD available for CRC write\n"));
-            }
-        }
-    }
+        /* Copy frame data to RFD */
+        address_space_write(&address_space_memory, rfd_addr + data_offset,
+                           MEMTXATTRS_UNSPECIFIED, packet_data, target_size);
+        bytes_copied = target_size;
 
-    /* Update RFD status after reception */
-    if (packet_completed) {
-        status |= STAT_C | STAT_OK | STAT_B | is_broadcast;  /* Set complete and OK bits */
+        /* Update RFD actual count */
+        set_uint16(rfd_addr + 12, target_size);
+
     } else {
-        /* Failed reception - update bits accordingly */
-        status &= ~STAT_B;  /* Messed up somewhere busy bit */
-        status |= STAT_C;   /* Set complete bit */
-        status &= ~STAT_OK; /* Not OK bit */
+        /* Flexible mode: Data distributed between RFD and RBDs */
+        uint16_t rfd_size = get_uint16(rfd_addr + 14);
+        uint16_t rfd_data_size = MIN(target_size, MIN(rx_copybreak, rfd_size));
+        uint16_t data_offset = 16;  /* Data area offset in RFD */
+
+        DBG(printf("RX: Flexible mode, RFD size=%d, will copy %d to RFD\n", 
+                   rfd_size, rfd_data_size));
+
+        /* Copy initial data to RFD if there's space */
+        if (rfd_data_size > 0) {
+            address_space_write(&address_space_memory, rfd_addr + data_offset,
+                              MEMTXATTRS_UNSPECIFIED, packet_data, rfd_data_size);
+            bytes_copied = rfd_data_size;
+            set_uint16(rfd_addr + 12, rfd_data_size);  /* Update actual count */
+        }
+
+        /* Process remaining data through RBD chain if needed */
+        if (bytes_copied < target_size) {
+            rbd_addr = get_uint32(rfd_addr + 8);  /* Get RBD pointer */
+            rbd_addr = i82596_translate_address(s, rbd_addr, false);
+
+            if (rbd_addr == I596_NULL || rbd_addr == 0) {
+                DBG(printf("No RBD available for remaining data\n"));
+                status |= RFD_STATUS_NOBUFS;
+                i82596_record_error(s, RFD_STATUS_NOBUFS);
+                s->resource_err++;
+                i82596_update_rx_state(s, RX_NO_RESOURCES);
+                packet_completed = !SAVE_BAD_FRAMES ? false : true;
+            } else {
+                /* Process RBD chain */
+                while (bytes_copied < target_size && rbd_addr != I596_NULL) {
+                    uint16_t rbd_status, rbd_size;
+                    uint32_t rbd_buf_addr, next_rbd;
+
+                    /* Read RBD fields */
+                    rbd_status = get_uint16(rbd_addr);
+                    rbd_buf_addr = get_uint32(rbd_addr + 8);
+                    rbd_buf_addr = i82596_translate_address(s, rbd_buf_addr, true);
+                    rbd_size = get_uint16(rbd_addr + 12) & SIZE_MASK;
+
+                    DBG(printf("RX: Processing RBD 0x%08x, buf=0x%08x, size=%d\n",
+                              rbd_addr, rbd_buf_addr, rbd_size));
+
+                    /* Calculate how much to copy to this RBD */
+                    size_t remaining = target_size - bytes_copied;
+                    size_t to_copy = MIN(remaining, rbd_size);
+
+                    /* Copy data to RBD buffer */
+                    if (to_copy > 0 && rbd_buf_addr != 0 && rbd_buf_addr != I596_NULL) {
+                        address_space_write(&address_space_memory, rbd_buf_addr,
+                                          MEMTXATTRS_UNSPECIFIED, 
+                                          packet_data + bytes_copied, to_copy);
+                        bytes_copied += to_copy;
+                    }
+
+                    /* Update RBD status */
+                    uint16_t rbd_actual_count = to_copy;
+                    if (bytes_copied >= target_size) {
+                        rbd_actual_count |= I596_EOF;  /* Mark end of frame */
+                    }
+                    set_uint16(rbd_addr, rbd_actual_count);
+
+                    /* Move to next RBD if we need more space */
+                    if (bytes_copied < target_size) {
+                        if (rbd_status & CMD_EOL) {  /* End of RBD list */
+                            DBG(printf("RX: End of RBD list reached\n"));
+                            status |= RFD_STATUS_NOBUFS;
+                            i82596_record_error(s, RFD_STATUS_NOBUFS);
+                            s->resource_err++;
+                            packet_completed = !SAVE_BAD_FRAMES ? false : true;
+                            break;
+                        }
+
+                        next_rbd = get_uint32(rbd_addr + 4);
+                        next_rbd = i82596_translate_address(s, next_rbd, false);
+
+                        if (next_rbd == 0 || next_rbd == I596_NULL || next_rbd == rbd_addr) {
+                            DBG(printf("RX: Invalid next RBD 0x%08x\n", next_rbd));
+                            status |= RFD_STATUS_NOBUFS;
+                            packet_completed = !SAVE_BAD_FRAMES ? false : true;
+                            break;
+                        }
+                        rbd_addr = next_rbd;
+                    } else {
+                        /* Frame completely received, advance RBD chain properly */
+                        next_rfd = get_uint32(rfd_addr + 4);
+                        next_rfd = i82596_translate_address(s, next_rfd, false);
+                        
+                        if (next_rfd != I596_NULL && next_rfd != 0) {
+                            /* Get the next RBD in the chain */
+                            next_rbd = get_uint32(rbd_addr + 4);
+                            uint16_t current_rbd_status = get_uint16(rbd_addr);
+                            
+                            if (!(current_rbd_status & CMD_EOL) && next_rbd != I596_NULL && next_rbd != 0) {
+                                /* Advance to next RBD in chain */
+                                set_uint32(next_rfd + 8, next_rbd);
+                                DBG(printf("RX: Updated next RFD 0x%08x to use RBD 0x%08x\n", 
+                                          next_rfd, next_rbd));
+                            } else {
+                                /* End of RBD chain - maintain current RBD for reuse */
+                                /* Reset the RBD status to make it available again */
+                                set_uint16(rbd_addr, 0);  /* Clear RBD status */
+                                set_uint32(next_rfd + 8, rbd_addr);
+                                DBG(printf("RX: End of RBD chain, reusing RBD 0x%08x for next RFD 0x%08x\n", 
+                                          rbd_addr, next_rfd));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
     }
+
+    /* Handle CRC storage if required */
+    if (I596_CRCINM && packet_completed) {
+        uint8_t crc_data[4];
+        size_t crc_len = crc_size;
+        
+        if (I596_CRC16_32) {
+            uint32_t crc = crc32(~0, packet_data, target_size);
+            crc = cpu_to_be32(crc);
+            memcpy(crc_data, &crc, 4);
+        } else {
+            uint16_t crc = i82596_calculate_crc16(packet_data, target_size);
+            crc = cpu_to_be16(crc);
+            memcpy(crc_data, &crc, 2);
+        }
+
+        /* Store CRC in appropriate location */
+        if (simplified_mode) {
+            uint16_t data_offset = 16;
+            address_space_write(&address_space_memory, rfd_addr + data_offset + target_size,
+                               MEMTXATTRS_UNSPECIFIED, crc_data, crc_len);
+        } else {
+            /* Store CRC in the last used RBD if possible */
+            if (rbd_addr != I596_NULL) {
+                uint32_t rbd_buf_addr = get_uint32(rbd_addr + 8);
+                rbd_buf_addr = i82596_translate_address(s, rbd_buf_addr, true);
+                if (rbd_buf_addr != 0 && rbd_buf_addr != I596_NULL) {
+                    size_t last_copied = (bytes_copied - (target_size - bytes_copied));
+                    address_space_write(&address_space_memory, rbd_buf_addr + last_copied,
+                                       MEMTXATTRS_UNSPECIFIED, crc_data, crc_len);
+                }
+            }
+        }
+        
+        DBG(printf("RX: CRC-%d stored: 0x%08x\n", I596_CRC16_32 ? 32 : 16, 
+                   I596_CRC16_32 ? *(uint32_t*)crc_data : *(uint16_t*)crc_data));
+    }
+
+    /* Update frame statistics and set final RFD status */
+    i82596_update_rx_statistics(s, packet_completed, crc_valid, size);
+
+    /* Set final RFD status */
+    if (packet_completed && crc_valid) {
+        status |= STAT_C | STAT_OK;  /* Complete and OK */
+        if (is_broadcast) {
+            status |= 0x0001;  /* Broadcast bit */
+        }
+    } else {
+        status |= STAT_C;  /* Complete but not OK */
+        if (!crc_valid) {
+            status |= RX_CRC_ERRORS;
+        }
+    }
+
     set_uint16(rfd_addr, status);
 
+    /* Advance RFA pointer to next RFD if frame was completed successfully */
+    if (packet_completed) {
+        next_rfd = get_uint32(rfd_addr + 4);  /* Get next RFD pointer */
+        if (next_rfd != I596_NULL && next_rfd != 0) {
+            next_rfd = i82596_translate_address(s, next_rfd, false);
+            if (next_rfd != 0 && next_rfd != I596_NULL) {
+                set_uint32(s->scb + 8, next_rfd);  /* Update RFA pointer in SCB */
+                DBG(printf("RX: Advanced RFA pointer to 0x%08x\n", next_rfd));
+            }
+        }
+    }
+
+    /* Handle command flags */
     if (command & CMD_SUSP) {
         i82596_update_rx_state(s, RX_SUSPENDED);
-        DBG(printf("RX: End of RFD list reached (EL bit set)\n"));
+        DBG(printf("RX: Suspending after packet (S bit set)\n"));
     }
 
     if (command & CMD_EOL) {
         i82596_update_rx_state(s, RX_NO_RESOURCES);
-        DBG(printf("RX: RX suspended (S bit set)\n"));
+        DBG(printf("RX: End of RFD list reached (EL bit set)\n"));
     }
 
-    /* Generate interrupt if packet was completed successfully */
-    if (packet_completed) {
+    /* Generate interrupt if packet was received successfully */
+    if (packet_completed && crc_valid) {
         s->scb_status |= SCB_STATUS_FR;
-        i82596_update_scb_irq(s, true);
+        if (command & CMD_INTR) {
+            i82596_update_scb_irq(s, true);
+        }
     }
 
-    DBG(printf("====== i82596_receive() END ======\n"));
+    /* Update SCB counters */
+    set_uint32(s->scb + 16, s->crc_err);        /* CRC error counter */
+    set_uint32(s->scb + 18, s->align_err);      /* Alignment error counter */
+    set_uint32(s->scb + 20, s->resource_err);   /* Resource error counter */
+    set_uint32(s->scb + 22, s->over_err);       /* Overrun error counter */
+
+    DBG(printf("====== i82596_receive() END: status=0x%04x, copied=%zu ======\n", 
+               status, bytes_copied));
     return size;
 }
 
