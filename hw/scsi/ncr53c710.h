@@ -200,7 +200,8 @@ typedef struct {
 
 /* Scripts state structure */
 typedef struct {
-    bool running;          /* Scripts running flag */
+    bool running;
+    bool pause_at_next_scsi;
     uint32_t pc;           /* Scripts program counter */
 } NCR710Scripts;
 

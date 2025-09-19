@@ -890,10 +890,8 @@ static void ncr710_script_dma_interrupt(NCR710State *s, int stat)
                         s->dsps, s->script_active);
                 s->script_active = 0; /* Pause but don't reset script state? */
                 s->istat |= NCR710_ISTAT_DIP;
-                s->dsp = 0;
                 s->istat &= ~NCR710_ISTAT_CON;  // Clear "Connected" bit
-                DPRINTF("COMPLETION: Reset DSP to 0x00000000, cleared CON bit\n");
-                
+                ncr710_stop_script(s);
                 ncr710_update_irq(s);
                 return;
                 
