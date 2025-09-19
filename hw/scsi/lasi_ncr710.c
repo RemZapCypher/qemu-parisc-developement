@@ -29,15 +29,12 @@
 #define LASI_SCSI_RESET         0x000   /* SCSI Reset Register */
 #define LASI_SCSI_NCR710_BASE   0x100   /* NCR53C710 registers start here */
 
-/* PA-RISC hardware type constants */
 #define HPHW_FIO    5           /* Fixed I/O module */
 
-/* LASI NCR53C710 sversions */
-#define LASI_710_HVERSION   0x3d
+#define LASI_710_HVERSION   0x3D
 #define LASI_700_SVERSION   0x00071
 #define LASI_710_SVERSION   0x00082
 
-/* PA-RISC device identification register offsets */
 #define PARISC_DEVICE_ID_OFF    0x00    /* HW type, HVERSION, SVERSION */
 #define PARISC_DEVICE_CONFIG_OFF 0x04   /* Configuration data */
 
@@ -47,11 +44,6 @@ static void lasi_ncr710_mem_write(void *opaque, hwaddr addr,
     LasiNCR710State *s = opaque;
 
     qemu_log("LASI NCR710: Write addr=0x%03x val=0x%08x size=%d\n", (int)addr, (int)val, size);
-
-    /* Note: SCSI Reset (addr 0x000) is handled by NCR710 SCNTL0 register
-     * No need for LASI-specific reset handling - let NCR710 handle it */
-
-    /* Forward NCR710 SCSI register writes to the NCR710 device */
     if (s->ncr710_dev) {
         MemoryRegion *ncr710_mem = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ncr710_dev), 0);
         if (ncr710_mem && addr < memory_region_size(ncr710_mem)) {
@@ -61,8 +53,6 @@ static void lasi_ncr710_mem_write(void *opaque, hwaddr addr,
             return;
         }
     }
-
-    /* Other writes to identification registers are ignored */
     qemu_log("LASI NCR710: Write to identification register ignored\n");
 }
 
@@ -71,13 +61,8 @@ static uint64_t lasi_ncr710_mem_read(void *opaque, hwaddr addr,
 {
     LasiNCR710State *s = LASI_NCR710(opaque);
     uint64_t val = 0;
-
-    /* ALWAYS log all memory reads for debugging firmware discovery */
     qemu_log("LASI NCR710: DISCOVERY READ addr=0x%03x size=%d", (int)addr, size);
-
-    /* Handle PA-RISC device identification registers - ONLY for non-conflicting offsets */
     if (addr == PARISC_DEVICE_ID_OFF) {
-        /* Return hardware type and sversion in PA-RISC standard format */
         val = (s->hw_type << 24) | s->sversion;
         qemu_log(" -> Device ID: hw_type=HPHW_FIO(%d), sversion=0x%04x -> 0x%08x\n",
                  s->hw_type, s->sversion, (uint32_t)val);
@@ -141,7 +126,7 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
 
     s->hw_type = HPHW_FIO;
     s->sversion = LASI_710_SVERSION;
-    s->hversion = 0x3d;
+    s->hversion = LASI_710_HVERSION;
     qemu_log("LASI NCR710: Device ID - hw_type=%d (HPHW_FIO), sversion=0x%04x, hversion=0x%02x\n",
              s->hw_type, s->sversion, s->hversion);
 
@@ -187,7 +172,6 @@ void lasi_ncr710_handle_legacy_cmdline(DeviceState *lasi_dev)
     BusState *scsi_bus = qdev_get_child_bus(s->ncr710_dev, "scsi.0");
     if (scsi_bus) {
         scsi_bus_legacy_handle_cmdline(SCSI_BUS(scsi_bus));
-        qemu_log("LASI NCR710: Legacy command line handled successfully\n");
     } else {
         qemu_log("LASI NCR710: Could not find SCSI bus on NCR710 device\n");
     }
@@ -196,20 +180,12 @@ void lasi_ncr710_handle_legacy_cmdline(DeviceState *lasi_dev)
 static void lasi_ncr710_reset(DeviceState *dev)
 {
     LasiNCR710State *s = LASI_NCR710(dev);
-    qemu_log("LASI NCR710: Device reset called\n");
     if (s->ncr710_dev) {
-        qemu_log("LASI NCR710: Resetting NCR710 device\n");
         device_cold_reset(s->ncr710_dev);
     }
     s->hw_type = HPHW_FIO;
     s->sversion = LASI_710_SVERSION;
     s->hversion = LASI_710_HVERSION;
-    qemu_log("LASI NCR710: Device reset completed\n");
-}
-
-static void lasi_ncr710_instance_init(Object *obj)
-{
-    qemu_log("LASI NCR710: Instance init\n");
 }
 
 static void lasi_ncr710_class_init(ObjectClass *klass, void *data)
@@ -229,7 +205,6 @@ static const TypeInfo lasi_ncr710_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(LasiNCR710State),
     .class_init    = lasi_ncr710_class_init,
-    .instance_init = lasi_ncr710_instance_init,
 };
 
 static void lasi_ncr710_register_types(void)
