@@ -331,4 +331,8 @@ static inline SysBusNCR710State *sysbus_from_ncr710(NCR710State *s)
 DeviceState *ncr53c710_init(MemoryRegion *address_space, hwaddr addr, qemu_irq irq);
 DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq);
 
+/* Exposed register read/write functions for LASI wrapper */
+void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
+uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size);
+
 #endif /* HW_NCR53C710_H */

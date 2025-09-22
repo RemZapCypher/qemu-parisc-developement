@@ -2781,7 +2781,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 }
 
 /* Memory region operations for NCR710 registers */
-static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
+uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
     NCR710State *s = opaque;
     uint8_t offset = addr & 0xff;
@@ -2790,7 +2790,7 @@ static uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size)
     return val;
 }
 
-static void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     NCR710State *s = opaque;
     uint8_t offset = addr & 0xff;

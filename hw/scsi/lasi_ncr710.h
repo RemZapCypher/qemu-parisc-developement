@@ -33,6 +33,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(LasiNCR710State, LASI_NCR710)
 #define PARISC_DEVICE_ID_OFF    0x00    /* HW type, HVERSION, SVERSION */
 #define PARISC_DEVICE_CONFIG_OFF 0x04   /* Configuration data */
 
+/* NCR710 register constants needed by LASI wrapper */
+#define PHASE_MASK              7       /* Mask for phase bits */
+#define PHASE_DO                0       /* Data out phase */
+
+/* NCR710 register bit definitions needed by LASI wrapper */
+#define NCR710_SCNTL1_RST       0x08    /* SCSI Reset */
+#define NCR710_ISTAT_RST        0x40    /* Device Reset */
+#define NCR710_ISTAT_ABRT       0x80    /* Script Abort */
+#define NCR710_ISTAT_CON        0x08    /* Connected */
+#define NCR710_DSTAT_DFE        0x80    /* DMA FIFO Empty */
+#define NCR710_CTEST2_DACK      0x01    /* DMA Acknowledge */
+
 /* LASI NCR53C710 state */
 typedef struct LasiNCR710State {
     SysBusDevice parent_obj;
@@ -41,7 +53,8 @@ typedef struct LasiNCR710State {
     uint32_t hw_type;        /* Hardware type (HPHW_*) */
     uint32_t sversion;       /* Software version */
     uint32_t hversion;       /* Hardware version */
-    DeviceState *ncr710_dev; /* NCR710 device */
+    SCSIBus bus;
+    NCR710State ncr710;
 } LasiNCR710State;
 
 /* Create and initialize a LASI NCR710 device */
