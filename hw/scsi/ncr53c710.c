@@ -356,7 +356,7 @@ void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
 
 
 
-static void ncr710_soft_reset(NCR710State *s)
+void ncr710_soft_reset(NCR710State *s)
 {
     /* Note: Resetting the device doesnt actuall reset the device */
     DPRINTF("Reset\n");
@@ -1080,13 +1080,18 @@ static void ncr710_do_dma(NCR710State *s, int out)
 /* Add a command to the queue.  */
 static void ncr710_queue_command(NCR710State *s)
 {
-    DPRINTF("NCR710_QUEUE_COMMAND START\n");
     NCR710Request *p = s->current;
 
+    if (!s->current) {
+        DPRINTF("ERROR: s->current is NULL in ncr710_queue_command!\n");
+        return;
+    }
     DPRINTF("Queueing tag=0x%x\n", p->tag);
     assert(s->current != NULL);
     assert(s->current->dma_len == 0);
+
     QTAILQ_INSERT_TAIL(&s->queue, s->current, next);
+
     s->current = NULL;
 
     p->pending = 0;
@@ -1372,7 +1377,12 @@ static void ncr710_do_command(NCR710State *s)
 
     id = (s->select_tag >> 8) & 0xff;
     s->lcrc = id;
+
+    DPRINTF("DEVICE LOOKUP: Searching bus=%p for channel=0 target=%d lun=%d\n",
+            &s->bus, idbitstonum(id), s->current_lun);
     dev = scsi_device_find(&s->bus, 0, idbitstonum(id), s->current_lun);
+    DPRINTF("DEVICE LOOKUP RESULT: device=%p (target %d)\n", dev, idbitstonum(id));
+
     if (!dev) {
         ncr710_bad_selection(s, id);
         return;
@@ -1380,9 +1390,11 @@ static void ncr710_do_command(NCR710State *s)
 
     assert(s->current == NULL);
     s->current = g_new0(NCR710Request, 1);
+    DPRINTF("NCR710_DO_COMMAND: Created s->current=%p\n", s->current);
     s->current->tag = s->select_tag;
     s->current->req = scsi_req_new(dev, s->current->tag, s->current_lun,
                                   buf, bytes_read, s->current);
+    DPRINTF("NCR710_DO_COMMAND: s->current=%p, req=%p\n", s->current, s->current->req);
     n = scsi_req_enqueue(s->current->req);
     if (n) {
         if (n > 0) {

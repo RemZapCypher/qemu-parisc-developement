@@ -22,17 +22,12 @@
 #include "system/blockdev.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "system/dma.h"
 
 #define HPHW_FIO    5           /* Fixed I/O module */
 #define LASI_710_SVERSION    0x00082
 #define SCNR                 0x53434E52
 #define LASI_710_HVERSION       0x3D
-
-/* Container helper to get LasiNCR710State from SCSIBus */
-static inline LasiNCR710State *lasi_ncr710_from_scsi_bus(SCSIBus *bus)
-{
-    return container_of(bus, LasiNCR710State, bus);
-}
 
 /* SCSI callback functions - migrated from NCR710 core to LASI wrapper */
 static void lasi_ncr710_request_cancelled(SCSIRequest *req)
@@ -65,24 +60,8 @@ static void lasi_ncr710_command_complete(SCSIRequest *req, size_t resid)
 
 static void lasi_ncr710_transfer_data(SCSIRequest *req, uint32_t len)
 {
-    LasiNCR710State *lasi_s = lasi_ncr710_from_scsi_bus(req->bus);
-    NCR710State *s = &lasi_s->ncr710;
-
+    /* We'll need to handle this differently since bus container_of is complex */
     trace_lasi_ncr710_transfer_data(len);
-
-    assert(req->hba_private);
-    if (req->hba_private != s->current) {
-        /* Handle queued request logic */
-        return;
-    }
-
-    /* Handle the data transfer */
-    s->command_complete = 1;
-    if (s->current) {
-        s->current->dma_len = len;
-        /* Trigger DMA operation or script continuation */
-        /* TODO: ncr710_do_dma(s, out); */
-    }
 }
 
 static const struct SCSIBusInfo lasi_ncr710_scsi_info = {
@@ -135,25 +114,39 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
 static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     LasiNCR710State *s = LASI_NCR710(opaque);
-    uint8_t val8 = val & 0xff;
 
-    trace_lasi_ncr710_reg_write(addr, val8, size);
+    trace_lasi_ncr710_reg_write(addr, val, size);
+
+    /* Handle PARISC device identification registers */
     if (addr <= 0x0F) {
+        /* Write to identification register ignored */
         return;
     }
+
     /* Forward to NCR710 core register write */
     if (addr >= 0x100) {
-        ncr710_reg_write(&s->ncr710, addr - 0x100, val, size);
-        trace_lasi_ncr710_reg_forward_write(addr, val8);
+        /* NCR710 core registers start at offset 0x100 */
+        hwaddr ncr_addr = addr - 0x100;
+
+        if (size == 1) {
+            /* Single byte write */
+            ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
+        } else {
+            for (unsigned i = 0; i < size; i++) {
+                uint8_t byte_val = (val >> ((size - 1 - i) * 8)) & 0xff;
+                ncr710_reg_write(&s->ncr710, ncr_addr + i, byte_val, 1);
+            }
+        }
+        trace_lasi_ncr710_reg_forward_write(addr, val);
     } else {
-        trace_lasi_ncr710_reg_write(addr, val8, size);
+        trace_lasi_ncr710_reg_write(addr, val, size);
     }
 }
 
 static const MemoryRegionOps lasi_ncr710_mmio_ops = {
     .read = lasi_ncr710_reg_read,
     .write = lasi_ncr710_reg_write,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,
@@ -177,16 +170,17 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     trace_lasi_ncr710_device_realize();
 
     memset(&s->ncr710, 0, sizeof(s->ncr710));
+    /* Initialize NCR710 queue and SCSI bus */
+    QTAILQ_INIT(&s->ncr710.queue);
+    scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &lasi_ncr710_scsi_info);
+    s->ncr710.as = &address_space_memory;
 
-    /* Minimal set up for NCR710 default register values */
+    /* Set up NCR710 default register values */
     s->ncr710.scntl0 = 0xc0;
     s->ncr710.scid = 0x80;
     s->ncr710.dstat = NCR710_DSTAT_DFE;
     s->ncr710.dien = 0x04;
     s->ncr710.ctest2 = NCR710_CTEST2_DACK;
-
-    /* Initialize SCSI bus */
-    scsi_bus_init(&s->bus, sizeof(s->bus), dev, &lasi_ncr710_scsi_info);
 
     /* Initialize memory region */
     memory_region_init_io(&s->mmio, OBJECT(dev), &lasi_ncr710_mmio_ops, s, "lasi-ncr710", 0x200);
@@ -197,7 +191,7 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
 void lasi_ncr710_handle_legacy_cmdline(DeviceState *lasi_dev)
 {
     LasiNCR710State *s = LASI_NCR710(lasi_dev);
-    SCSIBus *bus = &s->bus;
+    SCSIBus *bus = &s->ncr710.bus;
     int found_drives = 0;
 
     if (!bus) {
@@ -241,13 +235,7 @@ static void lasi_ncr710_reset(DeviceState *dev)
 
     trace_lasi_ncr710_device_reset();
 
-    memset(&s->ncr710, 0, sizeof(s->ncr710));
-
-    s->ncr710.scntl0 = 0xc0;
-    s->ncr710.scid = 0x80;
-    s->ncr710.dstat = NCR710_DSTAT_DFE;
-    s->ncr710.dien = 0x04;
-    s->ncr710.ctest2 = NCR710_CTEST2_DACK;
+    ncr710_soft_reset(&s->ncr710);
 }
 
 static void lasi_ncr710_instance_init(Object *obj)
