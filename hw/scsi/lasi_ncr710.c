@@ -117,9 +117,7 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
 
     trace_lasi_ncr710_reg_write(addr, val, size);
 
-    /* Handle PARISC device identification registers */
     if (addr <= 0x0F) {
-        /* Write to identification register ignored */
         return;
     }
 
@@ -170,7 +168,6 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     trace_lasi_ncr710_device_realize();
 
     memset(&s->ncr710, 0, sizeof(s->ncr710));
-    /* Initialize NCR710 queue and SCSI bus */
     QTAILQ_INIT(&s->ncr710.queue);
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &lasi_ncr710_scsi_info);
     s->ncr710.as = &address_space_memory;
