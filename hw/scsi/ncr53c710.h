@@ -191,10 +191,12 @@
 typedef struct NCR710State NCR710State;
 typedef struct NCR710Request NCR710Request;
 
-/* SCSI FIFO structure - 8 bytes with parity */
+/* SCSI FIFO structure - 8 bytes with parity using circular buffer */
 typedef struct {
     uint8_t data[NCR710_SCSI_FIFO_SIZE];    /* SCSI FIFO buffer (8 bytes) */
     uint8_t parity[NCR710_SCSI_FIFO_SIZE];  /* Parity bits for each byte */
+    int head;                                /* Head pointer for dequeue */
+    int tail;                                /* Tail pointer for enqueue */
     int count;                               /* Number of valid entries */
 } NCR710_SCSI_FIFO;
 
