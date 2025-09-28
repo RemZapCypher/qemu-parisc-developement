@@ -13,6 +13,17 @@
  * (at your option) any later version.
  */
 
+/*
+ * Rule of thumb for the LASI Wrapper::
+ *
+ * Read path:
+ * Take NCR710’s little-endian word and present it to the kernel as big-endian.
+ * Rearrange bytes before returning.
+ *
+ * Write path:
+ * Take kernel’s big-endian word and feed it to NCR710 as little-endian.
+ * Extract LSB first instead of MSB.
+*/
 #include "qemu/osdep.h"
 #include "hw/scsi/lasi_ncr710.h"
 #include "hw/scsi/ncr53c710.h"
@@ -28,6 +39,96 @@
 #define LASI_710_SVERSION    0x00082
 #define SCNR                 0xBEEFBABE
 #define LASI_710_HVERSION       0x3D
+
+static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
+                                    unsigned size)
+{
+    LasiNCR710State *s = LASI_NCR710(opaque);
+    uint64_t val = 0;
+
+    trace_lasi_ncr710_reg_read(addr, 0, size);
+
+    if (addr == 0x00) {  /* Device ID */
+        val = (HPHW_FIO << 24) | LASI_710_SVERSION;
+        trace_lasi_ncr710_reg_read_id(HPHW_FIO, LASI_710_SVERSION, val);
+        return val;
+    }
+
+    if (addr == 0x08) {  /* HVersion */
+        val = LASI_710_HVERSION;
+        trace_lasi_ncr710_reg_read_hversion(val);
+        return val;
+    }
+
+    if (addr == 0x0C) {  /* SCSI Identification */
+        val = SCNR;
+        trace_lasi_ncr710_reg_read_scsi_id(val);
+        return val;
+    }
+
+    /* Forward to NCR710 core register read */
+    if (addr >= 0x100) {
+        hwaddr ncr_addr = addr - 0x100;
+        printf("Reading value of the LASI WRAPPER == 0x%lx, size=%u\n", ncr_addr, size);
+
+        if (size == 1) {
+            /* Single byte read - direct passthrough */
+            val = ncr710_reg_read(&s->ncr710, ncr_addr, size);
+        } else {
+            /* Multi-byte read: read individual bytes and reconstruct big-endian value */
+            val = 0;
+            for (unsigned i = 0; i < size; i++) {
+                uint8_t byte_val = ncr710_reg_read(&s->ncr710, ncr_addr + i, 1);
+                val |= ((uint64_t)byte_val) << (i * 8);
+                printf("  Read byte %u from NCR addr 0x%lx: 0x%02x\n",
+                       i, ncr_addr + i, byte_val);
+            }
+            printf("  Reconstructed %u-byte value: 0x%lx\n", size, val);
+        }
+
+        trace_lasi_ncr710_reg_forward_read(addr, val);
+    } else {
+        val = 0;
+        trace_lasi_ncr710_reg_read(addr, val, size);
+    }
+    return val;
+}
+
+static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+{
+    LasiNCR710State *s = LASI_NCR710(opaque);
+
+    trace_lasi_ncr710_reg_write(addr, val, size);
+
+    if (addr <= 0x0F) {
+        return;
+    }
+
+    /* Forward to NCR710 core register write */
+    if (addr >= 0x100) {
+        hwaddr ncr_addr = addr - 0x100;
+
+        printf("Writing value to LASI WRAPPER == 0x%lx, val=0x%lx, size=%u\n",
+               ncr_addr, val, size);
+
+        if (size == 1) {
+            /* Single byte write - direct passthrough */
+            ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
+        } else {
+            /* Multi-byte write: break into little-endian byte sequence for NCR710 */
+            for (unsigned i = 0; i < size; i++) {
+                uint8_t byte_val = (val >> (i * 8)) & 0xff;
+                printf("  Writing byte %u to NCR addr 0x%lx: 0x%02x\n",
+                       i, ncr_addr + i, byte_val);
+                ncr710_reg_write(&s->ncr710, ncr_addr + i, byte_val, 1);
+            }
+        }
+
+        trace_lasi_ncr710_reg_forward_write(addr, val);
+    } else {
+        trace_lasi_ncr710_reg_write(addr, val, size);
+    }
+}
 
 /* SCSI callback functions - migrated from NCR710 core to LASI wrapper */
 static void lasi_ncr710_request_cancelled(SCSIRequest *req)
@@ -73,77 +174,10 @@ static const struct SCSIBusInfo lasi_ncr710_scsi_info = {
     .cancel = lasi_ncr710_request_cancelled,
 };
 
-static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
-                                    unsigned size)
-{
-    LasiNCR710State *s = LASI_NCR710(opaque);
-    uint64_t val = 0;
-
-    trace_lasi_ncr710_reg_read(addr, 0, size);
-
-    if (addr == 0x00) {  /* Device ID */
-        val = (HPHW_FIO << 24) | LASI_710_SVERSION;
-        trace_lasi_ncr710_reg_read_id(HPHW_FIO, LASI_710_SVERSION, val);
-        return val;
-    }
-
-    if (addr == 0x08) {  /* HVersion */
-        val = LASI_710_HVERSION;
-        trace_lasi_ncr710_reg_read_hversion(val);
-        return val;
-    }
-
-    if (addr == 0x0C) {  /* SCSI Identification */
-        val = SCNR;
-        trace_lasi_ncr710_reg_read_scsi_id(val);
-        return val;
-    }
-
-    /* Otherwise, Forward to NCR710 core register read */
-    if (addr >= 0x100) {
-        val = ncr710_reg_read(&s->ncr710, addr - 0x100, size);
-        trace_lasi_ncr710_reg_forward_read(addr, val);
-    } else {
-        val = 0;
-        trace_lasi_ncr710_reg_read(addr, val, size);
-    }
-    return val;
-}
-
-static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
-{
-    LasiNCR710State *s = LASI_NCR710(opaque);
-
-    trace_lasi_ncr710_reg_write(addr, val, size);
-
-    if (addr <= 0x0F) {
-        return;
-    }
-
-    /* Forward to NCR710 core register write */
-    if (addr >= 0x100) {
-        /* NCR710 core registers start at offset 0x100 */
-        hwaddr ncr_addr = addr - 0x100;
-
-        if (size == 1) {
-            /* Single byte write */
-            ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
-        } else {
-            for (unsigned i = 0; i < size; i++) {
-                uint8_t byte_val = (val >> ((size - 1 - i) * 8)) & 0xff;
-                ncr710_reg_write(&s->ncr710, ncr_addr + i, byte_val, 1);
-            }
-        }
-        trace_lasi_ncr710_reg_forward_write(addr, val);
-    } else {
-        trace_lasi_ncr710_reg_write(addr, val, size);
-    }
-}
-
 static const MemoryRegionOps lasi_ncr710_mmio_ops = {
     .read = lasi_ncr710_reg_read,
     .write = lasi_ncr710_reg_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,

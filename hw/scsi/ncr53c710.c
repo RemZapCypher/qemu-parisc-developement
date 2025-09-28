@@ -750,9 +750,10 @@ static inline uint32_t ncr710_read_dword(NCR710State *s, uint32_t addr)
     address_space_read(&address_space_memory, addr, MEMTXATTRS_UNSPECIFIED,
                       (uint8_t *)&buf, 4);
     DPRINTF("Read dword %08x from %08x\n", be32_to_cpu(buf), addr);
-    /* be32_to_cpu() works in practical but the datasheet,
-     * says " NCR710 operates interntally in LE mode"
-     * pls take a look into this.
+    /* The NCR710 datasheet saying "operates internally in LE mode"
+     * refers to its internal register organization,
+     * not how it reads SCRIPTS from host memory.
+     * This was intiallhy confusing.
      */
     return be32_to_cpu(buf);
 }
@@ -2262,15 +2263,16 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
     uint8_t ret = 0;
 
 #define CASE_GET_REG24(name, addr) \
-    case addr: ret = (s->name >> 16) & 0xff; break; \
+    case addr: ret = s->name & 0xff; break; \
     case addr + 1: ret = (s->name >> 8) & 0xff; break; \
-    case addr + 2: ret = s->name & 0xff; break;
+    case addr + 2: ret = (s->name >> 16) & 0xff; break;
 
 #define CASE_GET_REG32(name, addr) \
-    case addr: ret = (s->name >> 24) & 0xff; break; \
-    case addr + 1: ret = (s->name >> 16) & 0xff; break; \
-    case addr + 2: ret = (s->name >> 8) & 0xff; break; \
-    case addr + 3: ret = s->name & 0xff; break;
+    case addr: ret = s->name & 0xff; break; \
+    case addr + 1: ret = (s->name >> 8) & 0xff; break; \
+    case addr + 2: ret = (s->name >> 16) & 0xff; break; \
+    case addr + 3: ret = (s->name >> 24) & 0xff; break;
+
 
     switch (offset) {
         case NCR710_SCNTL0_REG: /* SCNTL0 */
@@ -2490,15 +2492,15 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
     uint8_t old_val;
 
 #define CASE_SET_REG24(name, addr) \
-    case addr    : s->name = (s->name & 0x0000ffff) | (val << 16); break; \
-    case addr + 1: s->name = (s->name & 0x00ff00ff) | (val << 8);  break; \
-    case addr + 2: s->name = (s->name & 0x00ffff00) | val;       break;
+    case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
+    case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
+    case addr + 2: s->name &= 0xff00ffff; s->name |= val << 16; break;
 
 #define CASE_SET_REG32(name, addr) \
-    case addr    : s->name = (s->name & 0x00ffffff) | (val << 24); break; \
-    case addr + 1: s->name = (s->name & 0xff00ffff) | (val << 16); break; \
-    case addr + 2: s->name = (s->name & 0xffff00ff) | (val << 8);  break; \
-    case addr + 3: s->name = (s->name & 0xffffff00) | val;       break;
+    case addr    : s->name &= 0xffffff00; s->name |= val;       break; \
+    case addr + 1: s->name &= 0xffff00ff; s->name |= val << 8;  break; \
+    case addr + 2: s->name &= 0xff00ffff; s->name |= val << 16; break; \
+    case addr + 3: s->name &= 0x00ffffff; s->name |= val << 24; break;
 
     /* Multi-method debug output to ensure visibility */
     NCR710_DPRINTF("NCR710: Write %s[0x%02x] = 0x%02x\n", ncr710_reg_name(offset), offset, val);
@@ -2704,24 +2706,24 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         break;
 
     CASE_SET_REG32(dnad, NCR710_DNAD_REG)
-    case 0x2c: /* DSP[24:31] */
-        s->dsp &= 0x00ffffff;
-        s->dsp |= val << 24;
-        NCR710_DPRINTF("NCR710: DSP write byte 0: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
-        break;
-    case 0x2d: /* DSP[16:23] */
-        s->dsp &= 0xff00ffff;
-        s->dsp |= val << 16;
-        NCR710_DPRINTF("NCR710: DSP write byte 1: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
-        break;
-    case 0x2e: /* DSP[8:15] */
-        s->dsp &= 0xffff00ff;
-        s->dsp |= val << 8;
-        NCR710_DPRINTF("NCR710: DSP write byte 2: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
-        break;
-    case 0x2f: /* DSP[0:7] - LSB */
+    case 0x2c: /* DSP[0:7] - LSB (after endianness conversion) */
         s->dsp &= 0xffffff00;
         s->dsp |= val;
+        NCR710_DPRINTF("NCR710: DSP write byte 0: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
+        break;
+    case 0x2d: /* DSP[8:15] */
+        s->dsp &= 0xffff00ff;
+        s->dsp |= val << 8;
+        NCR710_DPRINTF("NCR710: DSP write byte 1: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
+        break;
+    case 0x2e: /* DSP[16:23] */
+        s->dsp &= 0xff00ffff;
+        s->dsp |= val << 16;
+        NCR710_DPRINTF("NCR710: DSP write byte 2: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
+        break;
+    case 0x2f: /* DSP[24:31] - MSB (after endianness conversion) */
+        s->dsp &= 0x00ffffff;
+        s->dsp |= val << 24;
         NCR710_DPRINTF("NCR710: DSP write byte 3: 0x%02x, DSP FINAL=0x%08x\n", val, s->dsp);
         DPRINTF("DSP WRITE FINAL: prev_state(active=%d, waiting=%d, istat=0x%02x)\n",
                 s->script_active, s->waiting, s->istat);
@@ -2829,14 +2831,10 @@ static const struct SCSIBusInfo ncr710_scsi_info = {
 static const MemoryRegionOps ncr710_mmio_ops = {
     .read = ncr710_reg_read,
     .write = ncr710_reg_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,
-    },
-    .impl = {
-        .min_access_size = 1,
-        .max_access_size = 1,
     },
 };
 
