@@ -350,9 +350,6 @@ static void ncr710_update_irq(NCR710State *s);
 static void ncr710_script_dma_interrupt(NCR710State *s, int stat);
 static inline void ncr710_dma_read(NCR710State *s, uint32_t addr, void *buf, uint32_t len);
 static inline void ncr710_dma_write(NCR710State *s, uint32_t addr, const void *buf, uint32_t len);
-void ncr710_request_cancelled(SCSIRequest *req);
-void ncr710_command_complete(SCSIRequest *req, size_t resid);
-void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
 
 
 
@@ -745,7 +742,6 @@ static int ncr710_scsi_fifo_drain_to_memory(NCR710State *s, uint32_t addr, int m
 
 static uint8_t ncr710_reg_readb(NCR710State *s, int offset);
 static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val);
-static void ncr710_execute_script(NCR710State *s);
 static void ncr710_reselect(NCR710State *s, NCR710Request *p);
 
 static inline uint32_t ncr710_read_dword(NCR710State *s, uint32_t addr)
@@ -936,7 +932,7 @@ static void ncr710_script_interrupt_with_dsps(NCR710State *s, uint32_t dsps_valu
     ncr710_script_dma_interrupt(s, NCR710_DSTAT_SIR);
 }
 
-static inline void ncr710_set_phase(NCR710State *s, int phase)
+inline void ncr710_set_phase(NCR710State *s, int phase)
 {
     const char *phase_names[] = {"DO", "DI", "CO", "SI", "4", "5", "MO", "MI"};
     int old_phase = s->sstat2 & PHASE_MASK;
@@ -1782,7 +1778,7 @@ static void ncr710_script_timer_callback(void *opaque)
 }
 
 /* Enhanced script execution with proper autonomous flow */
-static void ncr710_execute_script(NCR710State *s)
+void ncr710_execute_script(NCR710State *s)
 {
     uint32_t insn;
     uint32_t addr;

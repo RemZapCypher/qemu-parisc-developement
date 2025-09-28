@@ -334,4 +334,11 @@ void ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsigned size);
 uint64_t ncr710_reg_read(void *opaque, hwaddr addr, unsigned size);
 void ncr710_soft_reset(NCR710State *s);
 
+/* NCR710 core SCSI callback functions */
+void ncr710_request_cancelled(SCSIRequest *req);
+void ncr710_command_complete(SCSIRequest *req, size_t resid);
+void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
+void ncr710_execute_script(NCR710State *s);
+void ncr710_set_phase(NCR710State *s, int phase);
+
 #endif /* HW_NCR53C710_H */

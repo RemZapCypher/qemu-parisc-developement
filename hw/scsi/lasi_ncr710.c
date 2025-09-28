@@ -26,16 +26,14 @@
 
 #define HPHW_FIO    5           /* Fixed I/O module */
 #define LASI_710_SVERSION    0x00082
-#define SCNR                 0x53434E52
+#define SCNR                 0xBEEFBABE
 #define LASI_710_HVERSION       0x3D
 
 /* SCSI callback functions - migrated from NCR710 core to LASI wrapper */
 static void lasi_ncr710_request_cancelled(SCSIRequest *req)
 {
     trace_lasi_ncr710_request_cancelled(req);
-
-    req->hba_private = NULL;
-    scsi_req_unref(req);
+    ncr710_request_cancelled(req);
 }
 
 static void lasi_ncr710_command_complete(SCSIRequest *req, size_t resid)
@@ -56,12 +54,13 @@ static void lasi_ncr710_command_complete(SCSIRequest *req, size_t resid)
     }
 
     trace_lasi_ncr710_command_complete(req->status, status_name, resid);
+    ncr710_command_complete(req, resid);
 }
 
-static void lasi_ncr710_transfer_data(SCSIRequest *req, uint32_t len)
-{
-    /* We'll need to handle this differently since bus container_of is complex */
+ static void lasi_ncr710_transfer_data(SCSIRequest *req, uint32_t len)
+ {
     trace_lasi_ncr710_transfer_data(len);
+    ncr710_transfer_data(req, len);
 }
 
 static const struct SCSIBusInfo lasi_ncr710_scsi_info = {
@@ -100,7 +99,7 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
         return val;
     }
 
-    /* Forward to NCR710 core register read */
+    /* Otherwise, Forward to NCR710 core register read */
     if (addr >= 0x100) {
         val = ncr710_reg_read(&s->ncr710, addr - 0x100, size);
         trace_lasi_ncr710_reg_forward_read(addr, val);
