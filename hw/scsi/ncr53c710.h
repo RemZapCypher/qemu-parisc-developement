@@ -209,7 +209,6 @@ struct NCR710Request {
     bool active;
     uint8_t *dma_buf;          /* DMA buffer pointer */
     bool out;                  /* Direction flag: true for output, false for input */
-    QTAILQ_ENTRY(NCR710Request) next;
 };
 
 /* NCR710 State structure */
@@ -223,7 +222,6 @@ struct NCR710State {
     /* SCSI bus */
     SCSIBus bus;
     AddressSpace *as;
-    QTAILQ_HEAD(, NCR710Request) queue;
 
     /* Registers */
     uint8_t scntl0;

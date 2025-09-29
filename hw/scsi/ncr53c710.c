@@ -34,7 +34,10 @@
  * [ ] DO_MSG_OUT
  * [ ] EXECUTE_SCRIPT
  *
- * [IF DONT RUN] Most Probably messed up the ncr710 stat0 thingy in scripts?
+ * [CURRENT ISSUE] ISTAT should raise an interrupt when scripts complete but doesnt.
+ * [NEXT TODO] QUEUE is their so not much issue involve the NCR710 script fixes and then
+ *
+ *
  * Note
  * The enqueue and dequeue functions need to be properly setup as the scripts is completing one phase and then is suppose to move on to the next but now is stuck inbetween.
  */
@@ -400,7 +403,6 @@ void ncr710_soft_reset(NCR710State *s)
     s->sdid = 0;
     s->sbcl = 0;
     s->sidl = 0;
-    assert(QTAILQ_EMPTY(&s->queue));
     assert(!s->current);
     ncr710_scsi_fifo_init(&s->scsi_fifo);
 }
@@ -524,20 +526,20 @@ static void ncr710_handle_parity_error(NCR710State *s)
     ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_PAR);
 }
 
-static uint8_t ncr710_get_msgbyte(NCR710State *s)
-{
-    uint8_t data;
-    ncr710_dma_read(s, s->dnad, &data, 1);
-    s->dnad++;
-    s->dbc--;
-    return data;
-}
+// static uint8_t ncr710_get_msgbyte(NCR710State *s)
+// {
+//     uint8_t data;
+//     ncr710_dma_read(s, s->dnad, &data, 1);
+//     s->dnad++;
+//     s->dbc--;
+//     return data;
+// }
 
-static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
-{
-    s->dnad += n;
-    s->dbc  -= n;
-}
+// static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
+// {
+//     s->dnad += n;
+//     s->dbc  -= n;
+// }
 
 
 /*
@@ -828,7 +830,7 @@ static void ncr710_do_dma(NCR710State *s, int out)
 
     addr = s->dnad;
 
-    DPRINTF("DMA addr=0x" DMA_ADDR_FMT " len=%d\n", addr, count);
+    DPRINTF("DMA addr=%d && len=%d\n", addr, count);
     s->dnad += count;
     s->dbc -= count;
      if (s->current->dma_buf == NULL) {
@@ -979,10 +981,9 @@ void ncr710_command_complete(SCSIRequest *req, size_t resid)
 {
     NCR710State *s = ncr710_from_scsi_bus(req->bus);
 
-    DPRINTF("Command complete status=%d (%s)\n", (int)req->status, status_name);
+    DPRINTF("Command complete status=%d\n", (int)req->status);
 
     int out = (s->sstat2 & PHASE_MASK) == PHASE_DO;
-    DPRINTF("Command complete status=%d\n", (int)status);
 	s->lcrc = 0;
     s->status = req->status;
     s->command_complete = 2;
@@ -1609,11 +1610,9 @@ void ncr710_execute_script(NCR710State *s)
             s->dsp, s->script_active, s->waiting, s->istat);
 
     s->script_active = 1;
-    s->scripts.running = true;
 
 again:
     insn_processed++;
-    s->scripts.pc = s->dsp;  /* Update scripts program counter */
 
     insn = ncr710_read_dword(s, s->dsp);
     if (!insn) {
@@ -1996,7 +1995,14 @@ again:
                     if ((insn & (1 << 20)) != 0) {
                         ncr710_update_irq(s);
                     } else {
-                        ncr710_script_dma_interrupt(s, NCR710_DSTAT_SIR);
+                        /* For completion interrupts, signal interrupt but don't stop script permanently */
+                        if (s->dsps == GOOD_STATUS_AFTER_STATUS) {
+                            s->dstat |= NCR710_DSTAT_SIR;
+                            s->script_active = 0;  /* Stop current script execution */
+                            ncr710_update_irq(s);
+                        } else {
+                            ncr710_script_dma_interrupt(s, NCR710_DSTAT_SIR);
+                        }
                     }
                     break;
                 default:
@@ -2098,6 +2104,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
         printf("READ REG32 %s[0x%02x] = 0x%02x\n", #name, addr + 3, (s->name >> 24) & 0xff); \
         ret = (s->name >> 24) & 0xff; break;
 
+    printf("DEBUG: NCR710 register read - offset=0x%02x\n", offset);
     switch (offset) {
         case NCR710_SCNTL0_REG: /* SCNTL0 */
             ret = s->scntl0;
@@ -2153,31 +2160,42 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             ret |= NCR710_DSTAT_DFE;
 
             bool had_script_interrupt = (s->dstat & NCR710_DSTAT_SIR) != 0;
-            bool was_completion = (s->dsps == 0x00000401);  // Good status completion
+            bool was_completion = (s->dsps == 0x00000401);  // Check DSPS for completion
 
-            /* Clear interrupt state */
-            s->dstat = 0;  /* Clear DSTAT on read */
-            s->istat &= ~NCR710_ISTAT_DIP;
-
-            /* IMPORTANT: Clear DSPS after completion interrupt is read */
+            /* IMPORTANT: Process completion BEFORE clearing interrupt state */
             if (was_completion) {
-                s->script_active = 0;
-                s->dsps = 0;
-                s->waiting = 0;
-                DPRINTF("DSTAT read: Completion interrupt, stopping script\n");
+                DPRINTF("DSTAT read: Completion interrupt detected (DSPS=0x401), processing completion\n");
 
                 /* Now that Linux has processed the completion interrupt,
-                 * it's safe to cleanup the SCSI request */
+                 * cleanup the SCSI request and reset state for next command */
                 if (s->current && s->current->req) {
                     SCSIRequest *req = s->current->req;
-                    DPRINTF("DSTAT read: Cleaning up SCSI request after completion interrupt\n");
+                    DPRINTF("DSTAT read: Cleaning up completed SCSI request\n");
                     s->current->req = NULL;
                     scsi_req_unref(req);
                 }
+
+                /* Reset controller state for next driver-managed command */
+                s->scntl1 &= ~NCR710_SCNTL1_CON;  /* Clear connection */
+                s->sstat2 &= ~PHASE_MASK;          /* Clear phase */
+                s->waiting = 0;
+
+                /* The Linux 53c700 driver uses driver-managed queuing, not hardware queuing.
+                 * After completion, the driver will manually write to DSP to start the next
+                 * command. We just need to ensure the NCR710 is ready for the next DSP write. */
+                DPRINTF("DSTAT read: NCR710 ready for next driver-managed command via DSP write\n");
+            }
+
+            /* Clear interrupt state AFTER processing completion */
+            s->dstat = 0;  /* Clear DSTAT on read */
+            s->istat &= ~NCR710_ISTAT_DIP;
+            if (was_completion) {
+                s->dsps = 0;  /* Clear DSPS only after completion processing */
             }
 
             ncr710_update_irq(s);
 
+            /* For non-completion script interrupts, resume if needed */
             if (had_script_interrupt && s->script_active == 0 && !was_completion) {
                 DPRINTF("DSTAT read cleared script interrupt, resuming execution\n");
                 s->script_active = 1;
@@ -2279,8 +2297,48 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_ISTAT_REG: /* ISTAT */
             ret = s->istat;
-            DPRINTF("ISTAT read: 0x%02x (CON=%d, DIP=%d, SIP=%d)\n",
-                    ret, !!(ret & NCR710_ISTAT_CON), !!(ret & NCR710_ISTAT_DIP), !!(ret & NCR710_ISTAT_SIP));
+            printf("DEBUG: ISTAT read in NCR710 handler: ret=0x%02x (before processing)\n", ret);
+            DPRINTF("ISTAT read: 0x%02x (CON=%d, DIP=%d, SIP=%d) dstat=0x%02x dsps=0x%08x\n",
+                    ret, !!(ret & NCR710_ISTAT_CON), !!(ret & NCR710_ISTAT_DIP), !!(ret & NCR710_ISTAT_SIP),
+                    s->dstat, s->dsps);
+
+            /* Handle DMA interrupt acknowledgment via ISTAT read */
+            if (ret & NCR710_ISTAT_DIP) {
+                bool is_completion = (s->dsps == 0x00000401);
+                printf("DEBUG: ISTAT DMA interrupt detected, dsps=0x%08x\n", s->dsps);
+                DPRINTF("ISTAT read: DMA interrupt detected (dsps=0x%08x)\n", s->dsps);
+
+                /* Clear DMA interrupt state */
+                s->istat &= ~NCR710_ISTAT_DIP;
+                s->dstat = 0;
+
+                if (is_completion) {
+                    printf("DEBUG: ISTAT processing completion interrupt\n");
+                    DPRINTF("ISTAT read: Completion interrupt processed, preparing for next command\n");
+                    s->dsps = 0;
+                    s->waiting = 0;
+
+                    /* Cleanup completed SCSI request */
+                    if (s->current && s->current->req) {
+                        SCSIRequest *req = s->current->req;
+                        DPRINTF("ISTAT read: Cleaning up completed SCSI request\n");
+                        s->current->req = NULL;
+                        scsi_req_unref(req);
+                    }
+
+                    /* Reset controller state for next driver-managed command */
+                    s->scntl1 &= ~NCR710_SCNTL1_CON;
+                    s->sstat2 &= ~PHASE_MASK;
+
+                    DPRINTF("ISTAT read: NCR710 ready for next driver command\n");
+                }
+
+                ncr710_update_irq(s);
+            } else {
+                printf("DEBUG: ISTAT no DMA interrupt, ret=0x%02x\n", ret);
+                DPRINTF("ISTAT read: No DMA interrupt pending (ret=0x%02x)\n", ret);
+            }
+            printf("DEBUG: ISTAT read returning: 0x%02x\n", ret);
             break;
         case NCR710_CTEST8_REG: /* CTEST8 */
             ret = s->ctest8;
@@ -2502,7 +2560,14 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         break;
 
     case NCR710_ISTAT_REG: /* ISTAT */
+        /* Preserve interrupt bits (DIP, SIP) that are set by hardware */
+        uint8_t preserved_bits = s->istat & (NCR710_ISTAT_DIP | NCR710_ISTAT_SIP);
         s->istat = (s->istat & 0x0f) | (val & 0xf0);
+        s->istat |= preserved_bits;  /* Restore hardware-controlled interrupt bits */
+
+        DPRINTF("ISTAT write: val=0x%02x, preserved=0x%02x, final=0x%02x\n",
+                val, preserved_bits, s->istat);
+
         if (val & NCR710_ISTAT_ABRT) {
             ncr710_script_dma_interrupt(s, NCR710_DSTAT_ABRT);
         }
@@ -2564,8 +2629,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         DPRINTF("DSP WRITE FINAL: prev_state(active=%d, waiting=%d, istat=0x%02x)\n",
                 s->script_active, s->waiting, s->istat);
         s->waiting = 0;
-        s->scripts.running = true;
-        s->scripts.pc = s->dsp;
         s->script_active = 1;
         s->istat |= NCR710_ISTAT_CON;
         NCR710_DPRINTF("NCR710: Starting script execution (DMODE=0x%02x)\n", s->dmode);
@@ -2606,8 +2669,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         if (val & NCR710_DCNTL_STD) {
             NCR710_DPRINTF("NCR710_DCNTL_STD triggered - manually starting SCRIPTS at DSP=0x%08x\n", s->dsp);
             s->waiting = 0;
-            s->scripts.running = true;
-            s->scripts.pc = s->dsp;
             ncr710_execute_script(s);
             s->dcntl &= ~NCR710_DCNTL_STD;
         }
@@ -2750,8 +2811,6 @@ static const VMStateDescription vmstate_ncr710 = {
         VMSTATE_BOOL(tolerant_enabled, NCR710State),
         VMSTATE_BOOL(differential_mode, NCR710State),
         VMSTATE_BOOL(cache_line_burst, NCR710State),
-        VMSTATE_BOOL(scripts.running, NCR710State),
-        VMSTATE_UINT32(scripts.pc, NCR710State),
 
         /* Note: Queue and current request are not migrated (complex pointers/lists).
            If needed, we will add custom pre/post load/save handlers later. */
@@ -2816,7 +2875,6 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
 
     trace_ncr710_device_realize();
     NCR710_DPRINTF("NCR710: Realize function called\n");
-    QTAILQ_INIT(&s->ncr710.queue);
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &ncr710_scsi_info);
     s->ncr710.as = &address_space_memory;
 
