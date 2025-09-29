@@ -72,8 +72,10 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
         printf("Reading value of the LASI WRAPPER == 0x%lx, size=%u\n", ncr_addr, size);
 
         if (size == 1) {
-            /* Single byte read - direct passthrough */
-            val = ncr710_reg_read(&s->ncr710, ncr_addr, size);
+            hwaddr corrected_addr = ncr_addr ^ 3;
+            val = ncr710_reg_read(&s->ncr710, corrected_addr, size);
+            printf("  Applied endian correction: 0x%lx -> 0x%lx, value=0x%02x\n",
+                   ncr_addr, corrected_addr, (uint8_t)val);
         } else {
             /* Multi-byte read: read individual bytes and reconstruct big-endian value */
             val = 0;
@@ -112,8 +114,10 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
                ncr_addr, val, size);
 
         if (size == 1) {
-            /* Single byte write - direct passthrough */
-            ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
+            hwaddr corrected_addr = ncr_addr ^ 3;
+            ncr710_reg_write(&s->ncr710, corrected_addr, val, size);
+            printf("  Applied endian correction: 0x%lx -> 0x%lx, value=0x%02x\n",
+                   ncr_addr, corrected_addr, (uint8_t)val);
         } else {
             /* Multi-byte write: break into little-endian byte sequence for NCR710 */
             for (unsigned i = 0; i < size; i++) {
@@ -201,7 +205,6 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     trace_lasi_ncr710_device_realize();
 
     memset(&s->ncr710, 0, sizeof(s->ncr710));
-    QTAILQ_INIT(&s->ncr710.queue);
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &lasi_ncr710_scsi_info);
     s->ncr710.as = &address_space_memory;
 

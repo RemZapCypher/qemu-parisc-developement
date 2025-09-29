@@ -25,6 +25,15 @@
  * 8. Read and Write functions
  * 9. QEMU Device model functions
  *
+ * [CURRENT ISSUE]
+ * The NCR710 is executing a command and going through its phases but when their is a good status after status on completing a command
+ * I think it is suppose to stop and load the next command from the queue but it is not doing that and keeps executing the same command
+ * raising interrupt but then is timing out for some reason.
+ * --Soumyajyotii Ssarkar
+ *
+ *
+ *
+ * Please Ignore below for personal notes during devel--
  * CHECK THIS::
  * [ ] add breakpoint in DO_COMMAND
  * [x] LSI_SSTAT0_STO
@@ -543,7 +552,7 @@ static void ncr710_handle_parity_error(NCR710State *s)
 
 
 /*
- * NCR710 SCSI FIFO IMPLEMENTATION - Hardware Accurate
+ * NCR710 SCSI FIFO IMPLEMENTATION
  *
  * NCR710 SCSI FIFO Specifications:
  * - Width: 9 bits (8 data bits + 1 parity bit per byte lane)
@@ -626,7 +635,7 @@ static inline uint8_t ncr710_scsi_fifo_dequeue(NCR710_SCSI_FIFO *fifo, uint8_t *
 
 static uint8_t ncr710_reg_readb(NCR710State *s, int offset);
 static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val);
-static void ncr710_reselect(NCR710State *s, NCR710Request *p);
+/* Function prototypes - queue management functions removed */
 
 static inline uint32_t ncr710_read_dword(NCR710State *s, uint32_t addr)
 {
@@ -672,7 +681,6 @@ static void ncr710_update_irq(NCR710State *s)
     SysBusNCR710State *ncr710_dev = sysbus_from_ncr710(s);
     int level;
     static int last_level;
-    NCR710Request *p;
 
     /* It's unclear whether the DIP/SIP bits should be cleared when the
        Interrupt Status Registers are cleared or when istat0 is read.
@@ -716,14 +724,8 @@ static void ncr710_update_irq(NCR710State *s)
     qemu_set_irq(ncr710_dev->irq, level);
 
     if (!level && ncr710_irq_on_rsl(s) && !(s->scntl1 & NCR710_SCNTL1_CON)) {
-        DPRINTF("Handled IRQs & disconnected, looking for pending "
-                "processes\n");
-        QTAILQ_FOREACH(p, &s->queue, next) {
-            if (p->pending) {
-                ncr710_reselect(s, p);
-                break;
-            }
-        }
+        DPRINTF("Handled IRQs & disconnected, kernel will handle next command\n");
+        /* Kernel driver will initiate next command - no device queue traversal needed */
     }
 }
 
@@ -852,22 +854,6 @@ static void ncr710_do_dma(NCR710State *s, int out)
     }
 }
 
-/* Add a command to the queue.  */
-static void ncr710_queue_command(NCR710State *s)
-{
-    NCR710Request *p = s->current;
-
-    DPRINTF("Queueing tag=0x%x\n", p->tag);
-    assert(s->current != NULL);
-    assert(s->current->dma_len == 0);
-    QTAILQ_INSERT_TAIL(&s->queue, s->current, next);
-    s->current = NULL;
-
-    p->pending = 0;
-    p->out = (s->sstat2 & PHASE_MASK) == PHASE_DO;
-}
-
-/* Queue a byte for a MSG IN phase.  */
 static void ncr710_add_msg_byte(NCR710State *s, uint8_t data)
 {
     DPRINTF("NCR710_ADD_MSG_BYTE START\n");
@@ -880,58 +866,10 @@ static void ncr710_add_msg_byte(NCR710State *s, uint8_t data)
     DPRINTF("NCR710_ADD_MSG_BYTE END\n");
 }
 
-/* Perform reselection to continue a command.  */
-static void ncr710_reselect(NCR710State *s, NCR710Request *p)
-{
-    int id;
-
-    DPRINTF("NCR710_RESELECT START\n");
-    assert(s->current == NULL);
-    QTAILQ_REMOVE(&s->queue, p, next);
-    s->current = p;
-
-    id = (p->tag >> 8) & 0xf;
-    /* LSI53C700 Family Compatibility, see NCR53C710 4-73 */
-    if (!(s->dcntl & NCR710_DCNTL_COM)) {
-        s->sfbr = 1 << (id & 0x7);
-    }
-	s->lcrc = 0;
-    DPRINTF("Reselected target %d\n", id);
-    s->scntl1 |= NCR710_SCNTL1_CON;
-    ncr710_set_phase(s, PHASE_MI);
-    s->msg_action = p->out ? 2 : 3;
-    s->current->dma_len = p->pending;
-    ncr710_add_msg_byte(s, 0x80);
-    if (s->current->tag & NCR710_TAG_VALID) {
-        ncr710_add_msg_byte(s, 0x20);
-        ncr710_add_msg_byte(s, p->tag & 0xff);
-    }
-
-    if (ncr710_irq_on_rsl(s)) {
-        ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_SEL);
-    }
-    DPRINTF("NCR710_RESELECT END\n");
-}
-
-static NCR710Request *ncr710_find_by_tag(NCR710State *s, uint32_t tag)
-{
-    NCR710Request *p;
-
-    QTAILQ_FOREACH(p, &s->queue, next) {
-        if (p->tag == tag) {
-            return p;
-        }
-    }
-
-    return NULL;
-}
-
 static void ncr710_request_free(NCR710State *s, NCR710Request *p)
 {
     if (p == s->current) {
         s->current = NULL;
-    } else {
-        QTAILQ_REMOVE(&s->queue, p, next);
     }
     g_free(p);
 }
@@ -965,8 +903,8 @@ static int ncr710_queue_req(NCR710State *s, SCSIRequest *req, uint32_t len)
     if (s->waiting == 1 ||
         (ncr710_irq_on_rsl(s) && !(s->scntl1 & NCR710_SCNTL1_CON) &&
          !(s->istat & (NCR710_ISTAT_SIP | NCR710_ISTAT_DIP)))) {
-        /* Reselect device.  */
-        ncr710_reselect(s, p);
+        /* Process immediately - kernel handles reselection */
+        s->current = p;
         return 0;
     } else {
         DPRINTF("Queueing IO tag=0x%x\n", p->tag);
@@ -997,8 +935,8 @@ void ncr710_command_complete(SCSIRequest *req, size_t resid)
     if (req->hba_private == s->current) {
         req->hba_private = NULL;
         ncr710_request_free(s, s->current);
-        scsi_req_unref(req);
-        DPRINTF("Command complete - keeping request active for script completion\n");
+        /* Note: scsi_req_unref() not needed here - scsi_req_complete() handles it */
+        DPRINTF("Command complete - request cleaned up\n");
     }
     if (s->waiting) {
         ncr710_resume_script(s);
@@ -1192,7 +1130,7 @@ static void ncr710_do_command(NCR710State *s)
             /* wait data */
             ncr710_set_phase(s, PHASE_MI);
             s->msg_action = 1;
-            ncr710_queue_command(s);
+            /* Let kernel handle next command - device just processes current one */
         } else {
             /* wait command complete - use status phase */
             ncr710_set_phase(s, PHASE_SI);
@@ -1296,14 +1234,14 @@ static void ncr710_do_msgin(NCR710State *s)
 static void ncr710_do_msgout(NCR710State *s)
 {
     uint32_t current_tag;
-    NCR710Request *current_req, *p, *p_next;
+    NCR710Request *current_req;
 
     if (s->current) {
         current_tag = s->current->tag;
         current_req = s->current;
     } else {
         current_tag = s->select_tag;
-        current_req = ncr710_find_by_tag(s, current_tag);
+        current_req = NULL;  /* No queue to search - kernel manages commands */
     }
 
     DPRINTF("MSG out len=%d\n", s->dbc);
@@ -1480,11 +1418,7 @@ static void ncr710_do_msgout(NCR710State *s)
                 if (s->current) {
                     scsi_req_cancel(s->current->req);
                 }
-                QTAILQ_FOREACH_SAFE(p, &s->queue, next, p_next) {
-                    if ((p->tag & 0x0000ff00) == (current_tag & 0x0000ff00)) {
-                        scsi_req_cancel(p->req);
-                    }
-                }
+                /* Kernel manages queue - device only handles current command */
                 ncr710_disconnect(s);
                 break;
 
@@ -1550,16 +1484,9 @@ static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count
 
 static void ncr710_wait_reselect(NCR710State *s)
 {
-    NCR710Request *p;
-
     DPRINTF("Wait Reselect\n");
 
-    QTAILQ_FOREACH(p, &s->queue, next) {
-        if (p->pending) {
-            ncr710_reselect(s, p);
-            break;
-        }
-    }
+    /* Kernel driver handles reselection - device just waits for next command */
     if (s->current == NULL) {
         s->waiting = 1;
     }
@@ -1997,6 +1924,15 @@ again:
                     } else {
                         /* For completion interrupts, signal interrupt but don't stop script permanently */
                         if (s->dsps == GOOD_STATUS_AFTER_STATUS) {
+                            DPRINTF("Script completion: Processing GOOD_STATUS_AFTER_STATUS\n");
+
+                            /* Complete the SCSI request immediately when script completes */
+                            if (s->current && s->current->req) {
+                                SCSIRequest *req = s->current->req;
+                                DPRINTF("Script completion: Completing SCSI request with status %d\n", s->status);
+                                scsi_req_complete(req, 0);  /* This will call ncr710_command_complete() */
+                            }
+
                             s->dstat |= NCR710_DSTAT_SIR;
                             s->script_active = 0;  /* Stop current script execution */
                             ncr710_update_irq(s);
@@ -2162,27 +2098,13 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             bool had_script_interrupt = (s->dstat & NCR710_DSTAT_SIR) != 0;
             bool was_completion = (s->dsps == 0x00000401);  // Check DSPS for completion
 
-            /* IMPORTANT: Process completion BEFORE clearing interrupt state */
             if (was_completion) {
-                DPRINTF("DSTAT read: Completion interrupt detected (DSPS=0x401), processing completion\n");
+                DPRINTF("DSTAT read: Completion interrupt acknowledged (DSPS=0x401)\n");
 
-                /* Now that Linux has processed the completion interrupt,
-                 * cleanup the SCSI request and reset state for next command */
-                if (s->current && s->current->req) {
-                    SCSIRequest *req = s->current->req;
-                    DPRINTF("DSTAT read: Cleaning up completed SCSI request\n");
-                    s->current->req = NULL;
-                    scsi_req_unref(req);
-                }
-
-                /* Reset controller state for next driver-managed command */
                 s->scntl1 &= ~NCR710_SCNTL1_CON;  /* Clear connection */
                 s->sstat2 &= ~PHASE_MASK;          /* Clear phase */
                 s->waiting = 0;
 
-                /* The Linux 53c700 driver uses driver-managed queuing, not hardware queuing.
-                 * After completion, the driver will manually write to DSP to start the next
-                 * command. We just need to ensure the NCR710 is ready for the next DSP write. */
                 DPRINTF("DSTAT read: NCR710 ready for next driver-managed command via DSP write\n");
             }
 
@@ -2297,47 +2219,11 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_ISTAT_REG: /* ISTAT */
             ret = s->istat;
-            printf("DEBUG: ISTAT read in NCR710 handler: ret=0x%02x (before processing)\n", ret);
+            printf("DEBUG: ISTAT read in NCR710 handler: ret=0x%02x\n", ret);
             DPRINTF("ISTAT read: 0x%02x (CON=%d, DIP=%d, SIP=%d) dstat=0x%02x dsps=0x%08x\n",
                     ret, !!(ret & NCR710_ISTAT_CON), !!(ret & NCR710_ISTAT_DIP), !!(ret & NCR710_ISTAT_SIP),
                     s->dstat, s->dsps);
 
-            /* Handle DMA interrupt acknowledgment via ISTAT read */
-            if (ret & NCR710_ISTAT_DIP) {
-                bool is_completion = (s->dsps == 0x00000401);
-                printf("DEBUG: ISTAT DMA interrupt detected, dsps=0x%08x\n", s->dsps);
-                DPRINTF("ISTAT read: DMA interrupt detected (dsps=0x%08x)\n", s->dsps);
-
-                /* Clear DMA interrupt state */
-                s->istat &= ~NCR710_ISTAT_DIP;
-                s->dstat = 0;
-
-                if (is_completion) {
-                    printf("DEBUG: ISTAT processing completion interrupt\n");
-                    DPRINTF("ISTAT read: Completion interrupt processed, preparing for next command\n");
-                    s->dsps = 0;
-                    s->waiting = 0;
-
-                    /* Cleanup completed SCSI request */
-                    if (s->current && s->current->req) {
-                        SCSIRequest *req = s->current->req;
-                        DPRINTF("ISTAT read: Cleaning up completed SCSI request\n");
-                        s->current->req = NULL;
-                        scsi_req_unref(req);
-                    }
-
-                    /* Reset controller state for next driver-managed command */
-                    s->scntl1 &= ~NCR710_SCNTL1_CON;
-                    s->sstat2 &= ~PHASE_MASK;
-
-                    DPRINTF("ISTAT read: NCR710 ready for next driver command\n");
-                }
-
-                ncr710_update_irq(s);
-            } else {
-                printf("DEBUG: ISTAT no DMA interrupt, ret=0x%02x\n", ret);
-                DPRINTF("ISTAT read: No DMA interrupt pending (ret=0x%02x)\n", ret);
-            }
             printf("DEBUG: ISTAT read returning: 0x%02x\n", ret);
             break;
         case NCR710_CTEST8_REG: /* CTEST8 */
