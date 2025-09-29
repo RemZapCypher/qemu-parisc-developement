@@ -191,21 +191,13 @@
 typedef struct NCR710State NCR710State;
 typedef struct NCR710Request NCR710Request;
 
-/* SCSI FIFO structure - 8 bytes with parity using circular buffer */
+/* SCSI FIFO structure - 8 transfers deep, 1 byte per transfer (9-bit wide with parity) */
 typedef struct {
-    uint8_t data[NCR710_SCSI_FIFO_SIZE];    /* SCSI FIFO buffer (8 bytes) */
-    uint8_t parity[NCR710_SCSI_FIFO_SIZE];  /* Parity bits for each byte */
-    int head;                                /* Head pointer for dequeue */
-    int tail;                                /* Tail pointer for enqueue */
-    int count;                               /* Number of valid entries */
+    uint8_t data[NCR710_SCSI_FIFO_SIZE];    /* SCSI FIFO buffer (8 bytes deep) */
+    uint8_t parity[NCR710_SCSI_FIFO_SIZE];  /* Parity bits for each byte (9th bit) */
+    int head;                                /* Head pointer for dequeue (0-7) */
+    int count;                               /* Number of valid entries (0-8) */
 } NCR710_SCSI_FIFO;
-
-/* Scripts state structure */
-typedef struct {
-    bool running;
-    bool pause_at_next_scsi;
-    uint32_t pc;           /* Scripts program counter */
-} NCR710Scripts;
 
 /* Request structure */
 struct NCR710Request {
@@ -302,9 +294,6 @@ struct NCR710State {
     bool tolerant_enabled;     /* Tolerant mode enabled flag */
     bool differential_mode;    /* Differential mode flag */
     bool cache_line_burst;     /* Cache line burst flag */
-
-    /* Scripts state */
-    NCR710Scripts scripts;
 };
 
 /* Define SysBusNCR710State */
