@@ -51,12 +51,6 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
         return val;
     }
 
-    // if (addr == 0x0C) {  /* SCSI Identification */
-    //     val = SCNR;
-    //     trace_lasi_ncr710_reg_read_scsi_id(val);
-    //     return val;
-    // }
-
     if (addr >= 0x100) {
         hwaddr ncr_addr = addr - 0x100;
         printf("Reading value of the LASI WRAPPER == 0x%lx, size=%u\n", ncr_addr, size);
@@ -116,7 +110,9 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
     }
 }
 
-/* req_cancelled, command_complete, transfer data forward to the core coutner part */
+/* req_cancelled, command_complete, transfer data forward to its
+ * core coutner part
+ */
 static void lasi_ncr710_request_cancelled(SCSIRequest *req)
 {
     trace_lasi_ncr710_request_cancelled(req);
@@ -125,7 +121,6 @@ static void lasi_ncr710_request_cancelled(SCSIRequest *req)
 
 static void lasi_ncr710_command_complete(SCSIRequest *req, size_t resid)
 {
-    /* Decode SCSI status for better debugging */
     const char *status_name = "UNKNOWN";
     switch (req->status) {
         case 0x00: status_name = "GOOD"; break;
