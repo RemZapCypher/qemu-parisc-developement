@@ -31,7 +31,6 @@
  *
  *
  *
- *
  * Please Ignore below for personal notes during devel--
  * CHECK THIS::
  * [x] add breakpoint in DO_COMMAND
@@ -134,6 +133,7 @@
 #define NCR710_DCNTL_PFEN    0x20
 #define NCR710_DCNTL_PFF     0x40
 #define NCR710_DCNTL_EA      0x80
+
 /* DMODE register bits */
 #define NCR710_DMODE_MAN     0x01
 #define NCR710_DMODE_BOF     0x02
@@ -411,7 +411,6 @@ void ncr710_soft_reset(NCR710State *s)
     s->sdid = 0;
     s->sbcl = 0;
     s->sidl = 0;
-    s->completion_details_read = 0;
     assert(!s->current);
     ncr710_scsi_fifo_init(&s->scsi_fifo);
 }
@@ -2119,14 +2118,21 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
 
             if (was_completion) {
                 DPRINTF("DSTAT read: Completion interrupt detected\n");
-                /* Reset most chip state but preserve command and interrupt for Linux to process */
+                /* Complete the SCSI request */
+                if (s->current && s->current->req) {
+                    DPRINTF("DSTAT read: Completing SCSI request for successful command\n");
+                    scsi_req_unref(s->current->req);
+                    ncr710_request_free(s, s->current);
+                    s->current = NULL;
+                }
+                /* Reset most chip state but KEEP interrupt active for Linux to process */
                 s->sstat0 = 0;
                 s->sstat1 = 0;
                 s->sstat2 = 0;
                 s->script_active = 0;
                 s->waiting = 0;
                 s->scntl1 &= ~NCR710_SCNTL1_CON;  /* Clear connection */
-                /* Keep DSTAT, DSPS, and current command active for Linux to process */
+                /* Not clearing DSTAT or ISTAT yet - let Linux process the interrupt first */
                 DPRINTF("DSTAT read: Partial reset completed, interrupt still active for Linux\n");
             }
             break;
@@ -2236,24 +2242,6 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
                     ret, !!(ret & NCR710_ISTAT_CON), !!(ret & NCR710_ISTAT_DIP), !!(ret & NCR710_ISTAT_SIP),
                     s->dstat, s->dsps);
 
-            /* Clear completion state only after multiple ISTAT reads with completion details read,
-             * giving Linux time to process the script interrupt */
-            if (s->completion_details_read && s->dsps == 0x00000401 &&
-                (ret & (NCR710_ISTAT_DIP | NCR710_ISTAT_SIP))) {
-                static int istat_read_count = 0;
-                istat_read_count++;
-                if (istat_read_count >= 3) {
-                    DPRINTF("ISTAT read: Linux acknowledging completion after %d reads, clearing state\n", istat_read_count);
-                    s->dstat = 0;
-                    s->dsps = 0;
-                    s->completion_details_read = 0;
-                    istat_read_count = 0;
-                    ncr710_update_irq(s);
-                    /* Re-read ISTAT after clearing to return updated value */
-                    ret = s->istat;
-                }
-            }
-
             printf("DEBUG: ISTAT read returning: 0x%02x\n", ret);
             break;
         case NCR710_CTEST8_REG: /* CTEST8 */
@@ -2269,30 +2257,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         CASE_GET_REG32(dnad, NCR710_DNAD_REG)
         CASE_GET_REG32(dsp, NCR710_DSP_REG)
-        /* DSPS register with completion interrupt clearing */
-        case NCR710_DSPS_REG: /* DSPS[0] */
-            printf("READ REG32 dsps[0x%02x] = 0x%02x\n", NCR710_DSPS_REG, s->dsps & 0xff);
-            ret = s->dsps & 0xff;
-            break;
-        case NCR710_DSPS_REG + 1: /* DSPS[1] */
-            printf("READ REG32 dsps[0x%02x] = 0x%02x\n", NCR710_DSPS_REG + 1, (s->dsps >> 8) & 0xff);
-            ret = (s->dsps >> 8) & 0xff;
-            break;
-        case NCR710_DSPS_REG + 2: /* DSPS[2] */
-            printf("READ REG32 dsps[0x%02x] = 0x%02x\n", NCR710_DSPS_REG + 2, (s->dsps >> 16) & 0xff);
-            ret = (s->dsps >> 16) & 0xff;
-            break;
-        case NCR710_DSPS_REG + 3: /* DSPS[3] */
-            printf("READ REG32 dsps[0x%02x] = 0x%02x\n", NCR710_DSPS_REG + 3, (s->dsps >> 24) & 0xff);
-            ret = (s->dsps >> 24) & 0xff;
-
-            /* Mark that Linux has read completion details but keep interrupt active
-             * until Linux actually processes the completion */
-            if (s->dsps == 0x00000401) {
-                DPRINTF("DSPS read: Linux read completion details (0x%08x)\n", s->dsps);
-                s->completion_details_read = 1;
-            }
-            break;
+        CASE_GET_REG32(dsps, NCR710_DSPS_REG)
         CASE_GET_REG32(scratch, NCR710_SCRATCH_REG)
             break;
         case NCR710_DMODE_REG: /* DMODE */
@@ -2573,26 +2538,6 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
 
         /* Clear any pending selection timeout since Linux is starting a new command */
         ncr710_clear_selection_timeout(s);
-
-        /* Clear any pending completion interrupt since Linux is starting a new command */
-        if (s->current) {
-            DPRINTF("DSP write: Cleaning up previous command as Linux starts new command\n");
-            /* Free the previous command since Linux has finished processing the completion */
-            if (s->current->req) {
-                scsi_req_unref(s->current->req);
-            }
-            ncr710_request_free(s, s->current);
-            s->current = NULL;
-        }
-
-        /* Clear any pending completion interrupt when starting new command */
-        if (s->dsps == 0x00000401) {
-            DPRINTF("DSP write: Clearing previous completion interrupt as Linux starts new command\n");
-            s->dstat = 0;
-            s->dsps = 0;
-            s->istat &= ~(NCR710_ISTAT_DIP | NCR710_ISTAT_SIP);
-            ncr710_update_irq(s);
-        }
 
         NCR710_DPRINTF("Starting script execution DMODE=0x%02x & DSP=0x%08x\n", s->dmode, s->dsp);
         ncr710_execute_script(s);
