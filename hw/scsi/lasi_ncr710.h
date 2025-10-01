@@ -49,7 +49,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(LasiNCR710State, LASI_NCR710)
 typedef struct LasiNCR710State {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
-    qemu_irq irq;
+    qemu_irq lasi_irq;       /* IRQ line to LASI controller */
     uint32_t hw_type;        /* Hardware type (HPHW_*) */
     uint32_t sversion;       /* Software version */
     uint32_t hversion;       /* Hardware version */

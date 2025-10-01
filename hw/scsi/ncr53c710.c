@@ -367,14 +367,6 @@ static inline int ncr710_irq_on_rsl(NCR710State *s)
 	return 0;
 }
 
-static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo);
-const char *ncr710_reg_name(int offset);
-static void ncr710_script_scsi_interrupt(NCR710State *s, int stat0);
-static void ncr710_update_irq(NCR710State *s);
-static void ncr710_script_dma_interrupt(NCR710State *s, int stat);
-static inline void ncr710_dma_read(NCR710State *s, uint32_t addr, void *buf, uint32_t len);
-static inline void ncr710_dma_write(NCR710State *s, uint32_t addr, const void *buf, uint32_t len);
-
 void ncr710_soft_reset(NCR710State *s)
 {
     /* Note: Resetting the device doesnt actuall reset the device */
@@ -415,6 +407,14 @@ void ncr710_soft_reset(NCR710State *s)
     assert(!s->current);
     ncr710_scsi_fifo_init(&s->scsi_fifo);
 }
+
+static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo);
+const char *ncr710_reg_name(int offset);
+static void ncr710_script_scsi_interrupt(NCR710State *s, int stat0);
+static void ncr710_update_irq(NCR710State *s);
+static void ncr710_script_dma_interrupt(NCR710State *s, int stat);
+static inline void ncr710_dma_read(NCR710State *s, uint32_t addr, void *buf, uint32_t len);
+static inline void ncr710_dma_write(NCR710State *s, uint32_t addr, const void *buf, uint32_t len);
 
 const char *ncr710_reg_name(int offset)
 {
@@ -535,21 +535,22 @@ static void ncr710_handle_parity_error(NCR710State *s)
     ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_PAR);
 }
 
-// static uint8_t ncr710_get_msgbyte(NCR710State *s)
-// {
-//     uint8_t data;
-//     ncr710_dma_read(s, s->dnad, &data, 1);
-//     s->dnad++;
-//     s->dbc--;
-//     return data;
-// }
+/* TODO:: Message byte handling functions - Implement NOW!
+static uint8_t ncr710_get_msgbyte(NCR710State *s)
+{
+    uint8_t data;
+    ncr710_dma_read(s, s->dnad, &data, 1);
+    s->dnad++;
+    s->dbc--;
+    return data;
+}
 
-// static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
-// {
-//     s->dnad += n;
-//     s->dbc  -= n;
-// }
-
+static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
+{
+    s->dnad += n;
+    s->dbc  -= n;
+}
+*/
 
 /*
  * NCR710 SCSI FIFO IMPLEMENTATION
@@ -577,7 +578,9 @@ static void ncr710_handle_parity_error(NCR710State *s)
  * - ncr710_scsi_fifo_enqueue() - Add byte to FIFO tail
  * - ncr710_scsi_fifo_dequeue() - Remove byte from FIFO head
  * - ncr710_scsi_fifo_empty/full() - Check FIFO status
- *//* Initialize a SCSI FIFO - 8 transfers deep */
+ */
+
+/* Initialize a SCSI FIFO - 8 transfers deep */
 static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo)
 {
     memset(fifo->data, 0, NCR710_SCSI_FIFO_SIZE);
@@ -678,7 +681,6 @@ static void ncr710_update_irq(NCR710State *s)
 {
     DPRINTF("NCR710_UPDATE_IRQ: dstat=0x%02x, sstat0=0x%02x, istat=0x%02x\n",
             s->dstat, s->sstat0, s->istat);
-    SysBusNCR710State *ncr710_dev = sysbus_from_ncr710(s);
     int level;
     static int last_level;
 
@@ -721,11 +723,10 @@ static void ncr710_update_irq(NCR710State *s)
     } else {
         DPRINTF("NCR710_UPDATE_IRQ: IRQ level unchanged (%d), istat=0x%02x\n", level, s->istat);
     }
-    qemu_set_irq(ncr710_dev->irq, level);
+    qemu_set_irq(s->irq, level);
 
     if (!level && ncr710_irq_on_rsl(s) && !(s->scntl1 & NCR710_SCNTL1_CON)) {
         DPRINTF("Handled IRQs & disconnected, kernel will handle next command\n");
-        /* Kernel driver will initiate next command - no device queue traversal needed */
     }
 }
 
@@ -804,6 +805,8 @@ static void ncr710_disconnect(NCR710State *s)
 static void ncr710_bad_selection(NCR710State *s, uint32_t id)
 {
     DPRINTF("SELECT failed: Target %d not responding\n", id);
+    s->dstat &= ~NCR710_DSTAT_SIR;  /* Clear script interrupt flag */
+    s->dsps = 0;  /* Clear script interrupt data */
     ncr710_script_scsi_interrupt(s, NCR710_SSTAT0_STO);
     ncr710_disconnect(s);
 }
@@ -932,12 +935,15 @@ void ncr710_command_complete(SCSIRequest *req, size_t resid)
     } else {
         ncr710_set_phase(s, PHASE_ST);
     }
-    if (req->hba_private == s->current) {
-        req->hba_private = NULL;
-        ncr710_request_free(s, s->current);
-        /* Note: scsi_req_unref() not needed here - scsi_req_complete() handles it */
-        DPRINTF("Command complete - request cleaned up\n");
-    }
+    // if (req->hba_private == s->current) {
+    //     req->hba_private = NULL;
+    //     ncr710_request_free(s, s->current);
+    //     /* Note: scsi_req_unref() not needed here
+    //      * as scsi_req_complete() handles it
+    //      */
+    //     scsi_req_unref(req);
+    //     DPRINTF("Command complete - request cleaned up\n");
+    // }
     if (s->waiting) {
         ncr710_resume_script(s);
     }
@@ -1492,35 +1498,29 @@ static void ncr710_wait_reselect(NCR710State *s)
     }
 }
 
-/* Check if we should continue script execution or wait for external events */
-static int ncr710_should_continue_script(NCR710State *s)
-{
-    if (!s->script_active) {
-        return 0;
-    }
-
-    if (s->waiting == 1) {
-        DPRINTF("Script waiting for transfer_data callback\n");
-        return 0;
-    }
-    if (s->waiting == 2 || s->waiting == 3) {
-        DPRINTF("Script waiting for SCSI phase, continuing\n");
-        s->waiting = 0;  /* Allow script to continue */
-        return 1;
-    }
-    return (s->waiting == 0);
-}
-
 /* Timer callback to continue script execution */
-static void ncr710_script_timer_callback(void *opaque)
+void ncr710_script_timer_callback(void *opaque)
 {
     NCR710State *s = opaque;
 
     DPRINTF("Script timer callback, waiting=%d, script_active=%d\n",
             s->waiting, s->script_active);
 
-    if (s->script_active && ncr710_should_continue_script(s)) {
+    if (s->script_active) {
         ncr710_execute_script(s);
+    }
+}
+
+/* IS THIS NECESSARY?????
+ * Timer callback for delayed completion interrupt delivery
+ */
+void ncr710_completion_irq_callback(void *opaque)
+{
+    NCR710State *s = opaque;
+
+    DPRINTF("Completion IRQ timer callback - delivering delayed interrupt\n");
+    if (s->irq) {
+        qemu_set_irq(s->irq, 1);
     }
 }
 
@@ -1922,23 +1922,11 @@ again:
                     if ((insn & (1 << 20)) != 0) {
                         ncr710_update_irq(s);
                     } else {
-                        /* For completion interrupts, signal interrupt but don't stop script permanently */
                         if (s->dsps == GOOD_STATUS_AFTER_STATUS) {
                             DPRINTF("Script completion: Processing GOOD_STATUS_AFTER_STATUS\n");
-
-                            /* Complete the SCSI request immediately when script completes */
-                            if (s->current && s->current->req) {
-                                SCSIRequest *req = s->current->req;
-                                DPRINTF("Script completion: Completing SCSI request with status %d\n", s->status);
-                                scsi_req_complete(req, 0);  /* This will call ncr710_command_complete() */
-                            }
-
-                            s->dstat |= NCR710_DSTAT_SIR;
-                            s->script_active = 0;  /* Stop current script execution */
-                            ncr710_update_irq(s);
-                        } else {
-                            ncr710_script_dma_interrupt(s, NCR710_DSTAT_SIR);
+                            DPRINTF("Script completion: Command state preserved for driver processing\n");
                         }
+                        ncr710_script_dma_interrupt(s, NCR710_DSTAT_SIR);
                     }
                     break;
                 default:
@@ -2098,30 +2086,27 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             bool had_script_interrupt = (s->dstat & NCR710_DSTAT_SIR) != 0;
             bool was_completion = (s->dsps == 0x00000401);  // Check DSPS for completion
 
-            if (was_completion) {
-                DPRINTF("DSTAT read: Completion interrupt acknowledged (DSPS=0x401)\n");
+            DPRINTF("DSTAT read: had_script_interrupt=%d, was_completion=%d, returning=0x%02x\n",
+                    had_script_interrupt, was_completion, ret);
 
-                s->scntl1 &= ~NCR710_SCNTL1_CON;  /* Clear connection */
-                s->sstat2 &= ~PHASE_MASK;          /* Clear phase */
+            if (was_completion) {
+                DPRINTF("DSTAT read: Completion interrupt detected\n");
+                /* Complete the SCSI request */
+                if (s->current && s->current->req) {
+                    DPRINTF("DSTAT read: Completing SCSI request for successful command\n");
+                    scsi_req_unref(s->current->req);
+                    ncr710_request_free(s, s->current);
+                    s->current = NULL;
+                }
+                /* Reset most chip state but KEEP interrupt active for Linux to process */
+                s->sstat0 = 0;
+                s->sstat1 = 0;
+                s->sstat2 = 0;
+                s->script_active = 0;
                 s->waiting = 0;
-
-                DPRINTF("DSTAT read: NCR710 ready for next driver-managed command via DSP write\n");
-            }
-
-            /* Clear interrupt state AFTER processing completion */
-            s->dstat = 0;  /* Clear DSTAT on read */
-            s->istat &= ~NCR710_ISTAT_DIP;
-            if (was_completion) {
-                s->dsps = 0;  /* Clear DSPS only after completion processing */
-            }
-
-            ncr710_update_irq(s);
-
-            /* For non-completion script interrupts, resume if needed */
-            if (had_script_interrupt && s->script_active == 0 && !was_completion) {
-                DPRINTF("DSTAT read cleared script interrupt, resuming execution\n");
-                s->script_active = 1;
-                ncr710_execute_script(s);
+                s->scntl1 &= ~NCR710_SCNTL1_CON;  /* Clear connection */
+                /* Don't clear DSTAT or ISTAT yet - let Linux process the interrupt first */
+                DPRINTF("DSTAT read: Partial reset completed, interrupt still active for Linux\n");
             }
             break;
         case NCR710_SSTAT0_REG: /* SSTAT0 */
@@ -2493,32 +2478,31 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         break;
 
     CASE_SET_REG32(dnad, NCR710_DNAD_REG)
-    case 0x2c: /* DSP[0:7] - LSB (after endianness conversion) */
+    case 0x2c: /* DSP[0:7] */
         s->dsp &= 0xffffff00;
         s->dsp |= val;
-        NCR710_DPRINTF("NCR710: DSP write byte 0: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
+        NCR710_DPRINTF("Write DSP ->  0: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
         break;
     case 0x2d: /* DSP[8:15] */
         s->dsp &= 0xffff00ff;
         s->dsp |= val << 8;
-        NCR710_DPRINTF("NCR710: DSP write byte 1: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
+        NCR710_DPRINTF("Write DSP -> 1: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
         break;
     case 0x2e: /* DSP[16:23] */
         s->dsp &= 0xff00ffff;
         s->dsp |= val << 16;
-        NCR710_DPRINTF("NCR710: DSP write byte 2: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
+        NCR710_DPRINTF("Write DSP -> 2: 0x%02x, DSP now=0x%08x\n", val, s->dsp);
         break;
-    case 0x2f: /* DSP[24:31] - MSB (after endianness conversion) */
+    case 0x2f: /* DSP[24:31] */
         s->dsp &= 0x00ffffff;
         s->dsp |= val << 24;
         NCR710_DPRINTF("NCR710: DSP write byte 3: 0x%02x, DSP FINAL=0x%08x\n", val, s->dsp);
-        DPRINTF("DSP WRITE FINAL: prev_state(active=%d, waiting=%d, istat=0x%02x)\n",
+        NCR710_DPRINTF("DSP WRITE prev_state(active=%d, waiting=%d, istat=0x%02x)\n",
                 s->script_active, s->waiting, s->istat);
         s->waiting = 0;
         s->script_active = 1;
         s->istat |= NCR710_ISTAT_CON;
-        NCR710_DPRINTF("NCR710: Starting script execution (DMODE=0x%02x)\n", s->dmode);
-        DPRINTF("DSP WRITE: About to execute script at DSP=0x%08x (CON bit set)\n", s->dsp);
+        NCR710_DPRINTF("Starting script execution DMODE=0x%02x & DSP=0x%08x\n", s->dmode, s->dsp);
         ncr710_execute_script(s);
         break;
     CASE_SET_REG32(dsps, NCR710_DSPS_REG)
@@ -2553,7 +2537,8 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
     case NCR710_DCNTL_REG: /* DCNTL */
         s->dcntl = val & ~(NCR710_DCNTL_PFF);
         if (val & NCR710_DCNTL_STD) {
-            NCR710_DPRINTF("NCR710_DCNTL_STD triggered - manually starting SCRIPTS at DSP=0x%08x\n", s->dsp);
+            NCR710_DPRINTF("NCR710_DCNTL_STD triggered - manually starting SCRIPTS \
+                 at DSP=0x%08x\n", s->dsp);
             s->waiting = 0;
             ncr710_execute_script(s);
             s->dcntl &= ~NCR710_DCNTL_STD;
@@ -2565,7 +2550,7 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         break;
 
     default:
-        qemu_log_mask(LOG_UNIMP, "NCR710: write unknown register %02X\n", offset);
+        NCR710_DPRINTF("NCR710: write unknown register %02X\n", offset);
         break;
     }
 
@@ -2697,14 +2682,10 @@ static const VMStateDescription vmstate_ncr710 = {
         VMSTATE_BOOL(tolerant_enabled, NCR710State),
         VMSTATE_BOOL(differential_mode, NCR710State),
         VMSTATE_BOOL(cache_line_burst, NCR710State),
-
-        /* Note: Queue and current request are not migrated (complex pointers/lists).
-           If needed, we will add custom pre/post load/save handlers later. */
         VMSTATE_END_OF_LIST()
     }
 };
 
-/* VMState for SysBusNCR710State */
 static const VMStateDescription vmstate_sysbus_ncr710 = {
     .name = "sysbus_ncr710",
     .version_id = 1,
@@ -2720,7 +2701,6 @@ DeviceState *ncr710_device_create_sysbus(hwaddr addr, qemu_irq irq)
     DeviceState *dev;
     SysBusDevice *sysbus;
 
-    /* trace_ncr710_create_sysbus(addr); */
     dev = qdev_new(TYPE_SYSBUS_NCR710_SCSI);
     sysbus = SYS_BUS_DEVICE(dev);
 
@@ -2767,7 +2747,6 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     ncr710_scsi_fifo_init(&s->ncr710.scsi_fifo);
     s->ncr710.dcntl &= ~NCR710_DCNTL_COM;
     s->ncr710.scid = 0x80 | NCR710_HOST_ID;
-    s->ncr710.big_endian = false;
 
     /* Initialize script timer */
     s->ncr710.script_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,

@@ -2,6 +2,7 @@
  * LASI Wrapper for NCR710 SCSI I/O Processor
  *
  * Copyright (c) 2025 Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
+ * Mentored by Helge Deller <deller@gmx.de>
  *
  * NCR710 SCSI I/O Processor implementation
  * Based on the NCR53C710 Technical Manual Version 3.2, December 2000
@@ -13,21 +14,11 @@
  * (at your option) any later version.
  */
 
-/*
- * Rule of thumb for the LASI Wrapper::
- *
- * Read path:
- * Take NCR710’s little-endian word and present it to the kernel as big-endian.
- * Rearrange bytes before returning.
- *
- * Write path:
- * Take kernel’s big-endian word and feed it to NCR710 as little-endian.
- * Extract LSB first instead of MSB.
-*/
 #include "qemu/osdep.h"
 #include "hw/scsi/lasi_ncr710.h"
 #include "hw/scsi/ncr53c710.h"
 #include "hw/sysbus.h"
+#include "qemu/timer.h"
 #include "qemu/log.h"
 #include "trace.h"
 #include "system/blockdev.h"
@@ -60,24 +51,19 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
         return val;
     }
 
-    if (addr == 0x0C) {  /* SCSI Identification */
-        val = SCNR;
-        trace_lasi_ncr710_reg_read_scsi_id(val);
-        return val;
-    }
+    // if (addr == 0x0C) {  /* SCSI Identification */
+    //     val = SCNR;
+    //     trace_lasi_ncr710_reg_read_scsi_id(val);
+    //     return val;
+    // }
 
-    /* Forward to NCR710 core register read */
     if (addr >= 0x100) {
         hwaddr ncr_addr = addr - 0x100;
         printf("Reading value of the LASI WRAPPER == 0x%lx, size=%u\n", ncr_addr, size);
-
         if (size == 1) {
-            hwaddr corrected_addr = ncr_addr ^ 3;
-            val = ncr710_reg_read(&s->ncr710, corrected_addr, size);
-            printf("  Applied endian correction: 0x%lx -> 0x%lx, value=0x%02x\n",
-                   ncr_addr, corrected_addr, (uint8_t)val);
+            hwaddr actual_addr = ncr_addr ^ 3;
+            val = ncr710_reg_read(&s->ncr710, actual_addr, size);
         } else {
-            /* Multi-byte read: read individual bytes and reconstruct big-endian value */
             val = 0;
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte_val = ncr710_reg_read(&s->ncr710, ncr_addr + i, 1);
@@ -106,7 +92,6 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
         return;
     }
 
-    /* Forward to NCR710 core register write */
     if (addr >= 0x100) {
         hwaddr ncr_addr = addr - 0x100;
 
@@ -114,12 +99,9 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
                ncr_addr, val, size);
 
         if (size == 1) {
-            hwaddr corrected_addr = ncr_addr ^ 3;
-            ncr710_reg_write(&s->ncr710, corrected_addr, val, size);
-            printf("  Applied endian correction: 0x%lx -> 0x%lx, value=0x%02x\n",
-                   ncr_addr, corrected_addr, (uint8_t)val);
+            hwaddr actual_addr = ncr_addr ^ 3;
+            ncr710_reg_write(&s->ncr710, actual_addr, val, size);
         } else {
-            /* Multi-byte write: break into little-endian byte sequence for NCR710 */
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte_val = (val >> (i * 8)) & 0xff;
                 printf("  Writing byte %u to NCR addr 0x%lx: 0x%02x\n",
@@ -134,7 +116,7 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
     }
 }
 
-/* SCSI callback functions - migrated from NCR710 core to LASI wrapper */
+/* req_cancelled, command_complete, transfer data forward to the core coutner part */
 static void lasi_ncr710_request_cancelled(SCSIRequest *req)
 {
     trace_lasi_ncr710_request_cancelled(req);
@@ -163,7 +145,7 @@ static void lasi_ncr710_command_complete(SCSIRequest *req, size_t resid)
 }
 
  static void lasi_ncr710_transfer_data(SCSIRequest *req, uint32_t len)
- {
+{
     trace_lasi_ncr710_transfer_data(len);
     ncr710_transfer_data(req, len);
 }
@@ -214,11 +196,11 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     s->ncr710.dstat = NCR710_DSTAT_DFE;
     s->ncr710.dien = 0x04;
     s->ncr710.ctest2 = NCR710_CTEST2_DACK;
+    s->ncr710.irq = s->lasi_irq;
 
     /* Initialize memory region */
     memory_region_init_io(&s->mmio, OBJECT(dev), &lasi_ncr710_mmio_ops, s, "lasi-ncr710", 0x200);
     sysbus_init_mmio(sbd, &s->mmio);
-    qdev_init_gpio_out(dev, &s->irq, 1);
 }
 
 void lasi_ncr710_handle_legacy_cmdline(DeviceState *lasi_dev)
@@ -252,22 +234,22 @@ DeviceState *lasi_ncr710_init(MemoryRegion *addr_space, hwaddr hpa, qemu_irq irq
 {
     DeviceState *dev;
     LasiNCR710State *s;
+    SysBusDevice *sbd;
 
     dev = qdev_new(TYPE_LASI_NCR710);
     s = LASI_NCR710(dev);
-    s->irq = irq;
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sbd = SYS_BUS_DEVICE(dev);
+    s->lasi_irq = irq;
+    sysbus_realize_and_unref(sbd, &error_fatal);
     memory_region_add_subregion(addr_space, hpa,
-                               sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+                               sysbus_mmio_get_region(sbd, 0));
     return dev;
 }
 
 static void lasi_ncr710_reset(DeviceState *dev)
 {
     LasiNCR710State *s = LASI_NCR710(dev);
-
     trace_lasi_ncr710_device_reset();
-
     ncr710_soft_reset(&s->ncr710);
 }
 

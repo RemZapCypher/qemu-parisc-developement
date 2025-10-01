@@ -283,6 +283,7 @@ struct NCR710State {
 
     /* Script execution timer */
     QEMUTimer *script_timer;
+    QEMUTimer *completion_irq_timer;
 
     /* Additional required fields */
     uint32_t select_tag;       /* Select tag for SCSI device selection */
@@ -329,5 +330,9 @@ void ncr710_command_complete(SCSIRequest *req, size_t resid);
 void ncr710_transfer_data(SCSIRequest *req, uint32_t len);
 void ncr710_execute_script(NCR710State *s);
 void ncr710_set_phase(NCR710State *s, int phase);
+
+/* NCR710 script timer callback */
+void ncr710_script_timer_callback(void *opaque);
+void ncr710_completion_irq_callback(void *opaque);
 
 #endif /* HW_NCR53C710_H */
