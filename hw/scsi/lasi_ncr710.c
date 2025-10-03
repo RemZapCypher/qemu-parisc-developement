@@ -55,8 +55,7 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
         hwaddr ncr_addr = addr - 0x100;
         printf("Reading value of the LASI WRAPPER == 0x%lx, size=%u\n", ncr_addr, size);
         if (size == 1) {
-            hwaddr actual_addr = ncr_addr ^ 3;
-            val = ncr710_reg_read(&s->ncr710, actual_addr, size);
+            val = ncr710_reg_read(&s->ncr710, ncr_addr, size);
         } else {
             val = 0;
             for (unsigned i = 0; i < size; i++) {
@@ -93,8 +92,7 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
                ncr_addr, val, size);
 
         if (size == 1) {
-            hwaddr actual_addr = ncr_addr ^ 3;
-            ncr710_reg_write(&s->ncr710, actual_addr, val, size);
+            ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
         } else {
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte_val = (val >> (i * 8)) & 0xff;
