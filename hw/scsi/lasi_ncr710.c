@@ -53,8 +53,10 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
 
     if (addr >= 0x100) {
         hwaddr ncr_addr = addr - 0x100;
-        printf("Reading value of the LASI WRAPPER == 0x%lx, size=%u\n", ncr_addr, size);
         if (size == 1) {
+            ncr_addr ^= 3;
+            printf("Reading value to LASI WRAPPER == 0x%lx%s, val=0x%lx, size=%u\n",
+                   addr - 0x100, size == 1 ? " (XORed)" : "", val, size);
             val = ncr710_reg_read(&s->ncr710, ncr_addr, size);
         } else {
             val = 0;
@@ -88,10 +90,10 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
     if (addr >= 0x100) {
         hwaddr ncr_addr = addr - 0x100;
 
-        printf("Writing value to LASI WRAPPER == 0x%lx, val=0x%lx, size=%u\n",
-               ncr_addr, val, size);
-
         if (size == 1) {
+            ncr_addr ^= 3;
+            printf("Writing value to LASI WRAPPER == 0x%lx%s, val=0x%lx, size=%u\n",
+                   addr - 0x100, size == 1 ? " (XORed)" : "", val, size);
             ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
         } else {
             for (unsigned i = 0; i < size; i++) {
@@ -182,6 +184,9 @@ static void lasi_ncr710_realize(DeviceState *dev, Error **errp)
     memset(&s->ncr710, 0, sizeof(s->ncr710));
     scsi_bus_init(&s->ncr710.bus, sizeof(s->ncr710.bus), dev, &lasi_ncr710_scsi_info);
     s->ncr710.as = &address_space_memory;
+
+    /* PA-RISC is big-endian, so enable byte-lane XOR for register access */
+    s->ncr710.big_endian = true;
 
     /* Set up NCR710 default register values */
     s->ncr710.scntl0 = 0xc0;
