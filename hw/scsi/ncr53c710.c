@@ -25,28 +25,9 @@
  * 8. Read and Write functions
  * 9. QEMU Device model functions
  *
- * [CURRENT ISSUE]
- * 1. The NCR710 shows "Host state after interrupt: BUSY" but after this it should goto Host State: FREE
- * 2. Their is issue with double interrupt occuring one at the correct time and then another one after a delay so need to fix this issue now.
+ * Now At user Space Kernel Panic!
  *
  *
- *
- * Please Ignore below for personal notes during devel--
- * CHECK THIS::
- * [x] add breakpoint in DO_COMMAND
- * [x] LSI_SSTAT0_STO
- * [x] DO_DMA
- * [x] DO_STATUS
- * [ ] DO_MSG_IN
- * [ ] DO_MSG_OUT
- * [ ] EXECUTE_SCRIPT
- *
- * [CURRENT ISSUE] ISTAT should raise an interrupt when scripts complete but doesnt.
- * [NEXT TODO] QUEUE is their so not much issue involve the NCR710 script fixes and then
- *
- *
- * Note
- * The enqueue and dequeue functions need to be properly setup as the scripts is completing one phase and then is suppose to move on to the next but now is stuck inbetween.
  */
 
 #include "qemu/osdep.h"
@@ -66,62 +47,62 @@
 #define NCR710_MAX_DEVS 7
 
 /* SCNTL0 (0x00) - SCSI Control Register 0 */
-#define NCR710_SCNTL0_TRG    0x01  /* Bit 0: Target Mode */
-#define NCR710_SCNTL0_AAP    0x02  /* Bit 1: Assert ATN on Parity Error */
-#define NCR710_SCNTL0_EPG    0x04  /* Bit 2: Enable Parity Generation */
-#define NCR710_SCNTL0_EPC    0x08  /* Bit 3: Enable Parity Checking */
-#define NCR710_SCNTL0_WATN   0x10  /* Bit 4: Select with ATN */
-#define NCR710_SCNTL0_START  0x20  /* Bit 5: Start Sequence */
-#define NCR710_SCNTL0_ARB0   0x40  /* Bit 6: Arbitration Mode bit 0 */
-#define NCR710_SCNTL0_ARB1   0x80  /* Bit 7: Arbitration Mode bit 1 */
+#define NCR710_SCNTL0_TRG    0x01
+#define NCR710_SCNTL0_AAP    0x02
+#define NCR710_SCNTL0_EPG    0x04
+#define NCR710_SCNTL0_EPC    0x08
+#define NCR710_SCNTL0_WATN   0x10
+#define NCR710_SCNTL0_START  0x20
+#define NCR710_SCNTL0_ARB0   0x40
+#define NCR710_SCNTL0_ARB1   0x80
 
 /* SCNTL1 (0x01) - SCSI Control Register 1 */
-#define NCR710_SCNTL1_RES0   0x01  /* Bit 0: Reserved */
-#define NCR710_SCNTL1_RES1   0x02  /* Bit 1: Reserved */
-#define NCR710_SCNTL1_AESP   0x04  /* Bit 2: Assert Even SCSI Parity (Force Bad Parity) */
-#define NCR710_SCNTL1_RST    0x08  /* Bit 3: Assert SCSI RST Signal */
-#define NCR710_SCNTL1_CON    0x10  /* Bit 4: Connected */
-#define NCR710_SCNTL1_ESR    0x20  /* Bit 5: Enable Selection/Reselection */
-#define NCR710_SCNTL1_ADB    0x40  /* Bit 6: Assert SCSI Data Bus */
-#define NCR710_SCNTL1_EXC    0x80  /* Bit 7: Extra Clock Cycle of Data Setup */
+#define NCR710_SCNTL1_RES0   0x01
+#define NCR710_SCNTL1_RES1   0x02
+#define NCR710_SCNTL1_AESP   0x04
+#define NCR710_SCNTL1_RST    0x08
+#define NCR710_SCNTL1_CON    0x10
+#define NCR710_SCNTL1_ESR    0x20
+#define NCR710_SCNTL1_ADB    0x40
+#define NCR710_SCNTL1_EXC    0x80
 
 /* ISTAT (0x21) - Interrupt Status Register */
-#define NCR710_ISTAT_DIP    0x01  /* DMA Interrupt Pending */
-#define NCR710_ISTAT_SIP    0x02  /* SCSI Interrupt Pending */
-#define NCR710_ISTAT_CON    0x08  /* Connected */
-#define NCR710_ISTAT_SIGP   0x20  /* Signal Process */
-#define NCR710_ISTAT_RST    0x40  /* Software Reset (write-only) */
-#define NCR710_ISTAT_ABRT   0x80  /* Abort Operation */
+#define NCR710_ISTAT_DIP    0x01
+#define NCR710_ISTAT_SIP    0x02
+#define NCR710_ISTAT_CON    0x08
+#define NCR710_ISTAT_SIGP   0x20
+#define NCR710_ISTAT_RST    0x40
+#define NCR710_ISTAT_ABRT   0x80
 
 /* SSTAT0 (0x0D) - SCSI Status Register 0 */
-#define NCR710_SSTAT0_PAR    0x01  /* Parity Error */
-#define NCR710_SSTAT0_RST    0x02  /* SCSI RST Signal Received */
-#define NCR710_SSTAT0_UDC    0x04  /* Unexpected Disconnect */
-#define NCR710_SSTAT0_SGE    0x08  /* SCSI Gross Error */
-#define NCR710_SSTAT0_SEL    0x10  /* Selected */
-#define NCR710_SSTAT0_STO    0x20  /* Selection Timeout */
-#define NCR710_SSTAT0_FCMP   0x40  /* Function Complete */
-#define NCR710_SSTAT0_MA     0x80  /* Phase Mismatch/ATN */
+#define NCR710_SSTAT0_PAR    0x01
+#define NCR710_SSTAT0_RST    0x02
+#define NCR710_SSTAT0_UDC    0x04
+#define NCR710_SSTAT0_SGE    0x08
+#define NCR710_SSTAT0_SEL    0x10
+#define NCR710_SSTAT0_STO    0x20
+#define NCR710_SSTAT0_FCMP   0x40
+#define NCR710_SSTAT0_MA     0x80
 
 /* SSTAT1 (0x0E) - SCSI Status Register 1 */
-#define NCR710_SSTAT1_ORF    0x02  /* SCSI Output Register Full */
-#define NCR710_SSTAT1_ILF    0x04  /* SCSI Input Latch Full */
+#define NCR710_SSTAT1_ORF    0x02
+#define NCR710_SSTAT1_ILF    0x04
 
 /* SSTAT2 (0x0F) - SCSI Status Register 2 */
-#define NCR710_SSTAT2_FF0    0x01  /* SCSI FIFO Flags bit 0 */
-#define NCR710_SSTAT2_FF1    0x02  /* SCSI FIFO Flags bit 1 */
-#define NCR710_SSTAT2_FF2    0x04  /* SCSI FIFO Flags bit 2 */
-#define NCR710_SSTAT2_FF3    0x08  /* SCSI FIFO Flags bit 3 */
+#define NCR710_SSTAT2_FF0    0x01
+#define NCR710_SSTAT2_FF1    0x02
+#define NCR710_SSTAT2_FF2    0x04
+#define NCR710_SSTAT2_FF3    0x08
 
 /* SOCL (0x07) / SBCL (0x0B) - SCSI Output/Bus Control Lines */
-#define NCR710_SOCL_IO       0x01  /* I/O Signal */
-#define NCR710_SOCL_CD       0x02  /* C/D Signal */
-#define NCR710_SOCL_MSG      0x04  /* MSG Signal */
-#define NCR710_SOCL_ATN      0x08  /* ATN Signal */
-#define NCR710_SOCL_SEL      0x10  /* SEL Signal */
-#define NCR710_SOCL_BSY      0x20  /* BSY Signal */
-#define NCR710_SOCL_ACK      0x40  /* ACK Signal */
-#define NCR710_SOCL_REQ      0x80  /* REQ Signal */
+#define NCR710_SOCL_IO       0x01
+#define NCR710_SOCL_CD       0x02
+#define NCR710_SOCL_MSG      0x04
+#define NCR710_SOCL_ATN      0x08
+#define NCR710_SOCL_SEL      0x10
+#define NCR710_SOCL_BSY      0x20
+#define NCR710_SOCL_ACK      0x40
+#define NCR710_SOCL_REQ      0x80
 
 /* SBCL bits same as SOCL */
 #define NCR710_SBCL_IO       NCR710_SOCL_IO
@@ -134,58 +115,57 @@
 #define NCR710_SBCL_REQ      NCR710_SOCL_REQ
 
 /* DSTAT (0x0C) - DMA Status Register */
-#define NCR710_DSTAT_IID     0x01  /* Illegal Instruction Detected */
-#define NCR710_DSTAT_SIR     0x04  /* SCRIPTS Interrupt Instruction Received */
-#define NCR710_DSTAT_SSI     0x08  /* SCRIPTS Step Interrupt */
-#define NCR710_DSTAT_ABRT    0x10  /* Aborted */
-#define NCR710_DSTAT_BF      0x20  /* Bus Fault */
-#define NCR710_DSTAT_MDPE    0x40  /* Master Data Parity Error */
-#define NCR710_DSTAT_DFE     0x80  /* DMA FIFO Empty */
+#define NCR710_DSTAT_IID     0x01
+#define NCR710_DSTAT_SIR     0x04
+#define NCR710_DSTAT_SSI     0x08
+#define NCR710_DSTAT_ABRT    0x10
+#define NCR710_DSTAT_BF      0x20
+#define NCR710_DSTAT_MDPE    0x40
+#define NCR710_DSTAT_DFE     0x80
 
 /* DCNTL (0x3B) - DMA Control Register */
-#define NCR710_DCNTL_COM     0x01  /* Compatibility Mode */
-#define NCR710_DCNTL_IRQD    0x02  /* IRQ Disable */
-#define NCR710_DCNTL_STD     0x04  /* Start DMA Operation */
-#define NCR710_DCNTL_IRQM    0x08  /* IRQ Mode */
-#define NCR710_DCNTL_SSM     0x10  /* Single Step Mode */
-#define NCR710_DCNTL_PFEN    0x20  /* Pre-fetch Enable */
-#define NCR710_DCNTL_PFF     0x40  /* Pre-fetch Flush */
-/* NOTE: Bit 7 is reserved in NCR710 (EA/CLSE are LSI-specific) */
+#define NCR710_DCNTL_COM     0x01
+#define NCR710_DCNTL_IRQD    0x02
+#define NCR710_DCNTL_STD     0x04
+#define NCR710_DCNTL_IRQM    0x08
+#define NCR710_DCNTL_SSM     0x10
+#define NCR710_DCNTL_PFEN    0x20
+#define NCR710_DCNTL_PFF     0x40
 
 /* DMODE (0x38) - DMA Mode Register */
-#define NCR710_DMODE_MAN     0x01  /* Manual Start Mode */
-#define NCR710_DMODE_BOF     0x02  /* Burst Op Code Fetch Enable */
-#define NCR710_DMODE_ERMP    0x04  /* Enable Read Multiple */
-#define NCR710_DMODE_ERL     0x08  /* Enable Read Line */
-#define NCR710_DMODE_DIOM    0x10  /* Destination I/O Memory Enable */
-#define NCR710_DMODE_SIOM    0x20  /* Source I/O Memory Enable */
-#define NCR710_DMODE_BL_MASK 0xC0  /* Burst Length Mask */
-#define NCR710_DMODE_BL_1    0x00  /* Burst Length: 1 transfer */
-#define NCR710_DMODE_BL_2    0x40  /* Burst Length: 2 transfers */
-#define NCR710_DMODE_BL_4    0x80  /* Burst Length: 4 transfers */
-#define NCR710_DMODE_BL_8    0xC0  /* Burst Length: 8 transfers */
+#define NCR710_DMODE_MAN     0x01
+#define NCR710_DMODE_BOF     0x02
+#define NCR710_DMODE_ERMP    0x04
+#define NCR710_DMODE_ERL     0x08
+#define NCR710_DMODE_DIOM    0x10
+#define NCR710_DMODE_SIOM    0x20
+#define NCR710_DMODE_BL_MASK 0xC0
+#define NCR710_DMODE_BL_1    0x00
+#define NCR710_DMODE_BL_2    0x40
+#define NCR710_DMODE_BL_4    0x80
+#define NCR710_DMODE_BL_8    0xC0
 
 /* CTEST2 (0x16) - Chip Test Register 2 */
-#define NCR710_CTEST2_DACK   0x01  /* Data Acknowledge */
-#define NCR710_CTEST2_DREQ   0x02  /* Data Request */
-#define NCR710_CTEST2_TEOP   0x04  /* SCSI True End of Process */
-#define NCR710_CTEST2_PCICIE 0x08  /* PCI Interrupt Cause Enable */
-#define NCR710_CTEST2_CM     0x10  /* Configured as Memory */
-#define NCR710_CTEST2_CIO    0x20  /* Configured as I/O */
-#define NCR710_CTEST2_SIGP   0x40  /* Signal Process */
-#define NCR710_CTEST2_DDIR   0x80  /* Data Transfer Direction */
+#define NCR710_CTEST2_DACK   0x01
+#define NCR710_CTEST2_DREQ   0x02
+#define NCR710_CTEST2_TEOP   0x04
+#define NCR710_CTEST2_PCICIE 0x08
+#define NCR710_CTEST2_CM     0x10
+#define NCR710_CTEST2_CIO    0x20
+#define NCR710_CTEST2_SIGP   0x40
+#define NCR710_CTEST2_DDIR   0x80
 
 /* CTEST5 (0x19) - Chip Test Register 5 */
-#define NCR710_CTEST5_BL2    0x04  /* Burst Length bit 2 */
-#define NCR710_CTEST5_DDIR   0x08  /* DMA Direction */
-#define NCR710_CTEST5_MASR   0x10  /* Master Control for Set or Reset Pulses */
-#define NCR710_CTEST5_DFSN   0x20  /* DMA FIFO Size (Read-only) */
-#define NCR710_CTEST5_BBCK   0x40  /* Back-to-Back Clock */
-#define NCR710_CTEST5_ADCK   0x80  /* Increment DNAD Register */
+#define NCR710_CTEST5_BL2    0x04
+#define NCR710_CTEST5_DDIR   0x08
+#define NCR710_CTEST5_MASR   0x10
+#define NCR710_CTEST5_DFSN   0x20
+#define NCR710_CTEST5_BBCK   0x40
+#define NCR710_CTEST5_ADCK   0x80
 
 /* SCID (0x04) - SCSI Chip ID Register */
-#define NCR710_SCID_RRE      0x60  /* Enable Response to Reselection (bits 6-5) */
-#define NCR710_SCID_ID_MASK  0x07  /* Chip ID mask (bits 2-0) */
+#define NCR710_SCID_RRE      0x60
+#define NCR710_SCID_ID_MASK  0x07
 
 #define NCR710_HOST_ID       7
 
@@ -214,7 +194,7 @@
 #define SCSI_MSG_SYNCHRONOUS_DATA_TRANSFER  0x01
 #define SCSI_MSG_WIDE_DATA_TRANSFER     0x03
 
-/* Script interrupt codes - matching Linux 53c700 driver expectations */
+/* Script interrupt codes */
 #define A_GOOD_STATUS_AFTER_STATUS          0x401
 #define A_DISCONNECT_AFTER_CMD              0x380
 #define A_DISCONNECT_AFTER_DATA             0x580
@@ -396,6 +376,7 @@ void ncr710_soft_reset(NCR710State *s)
     ncr710_scsi_fifo_init(&s->scsi_fifo);
 }
 
+/* LSI code Takes a better approach I took this */
 const char *ncr710_reg_name(int offset)
 {
     switch (offset) {
@@ -541,12 +522,6 @@ static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
  * - Depth: 8 transfers deep
  * - Total Capacity: 8-byte FIFO
  *
- * Implementation Features:
- * 1. 8-DEEP FIFO: Exactly matches NCR710 hardware specification
- * 2. PARITY SUPPORT: 9th bit stores parity for each byte
- * 3. FIFO SEMANTICS: First-in-first-out with head pointer and count
- * 4. HARDWARE ACCURACY: Matches actual NCR710 FIFO behavior
- *
  * SCSI FIFO Data Flow:
  * - Enqueue: Add byte at tail position (head + count)
  * - Dequeue: Remove byte from head position
@@ -560,7 +535,6 @@ static void ncr710_skip_msgbytes(NCR710State *s, unsigned int n)
  * - ncr710_scsi_fifo_empty/full() - Check FIFO status
  */
 
-/* Initialize a SCSI FIFO - 8 transfers deep */
 static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo)
 {
     memset(fifo->data, 0, NCR710_SCSI_FIFO_SIZE);
@@ -569,19 +543,16 @@ static void ncr710_scsi_fifo_init(NCR710_SCSI_FIFO *fifo)
     fifo->count = 0;
 }
 
-/* Check if SCSI FIFO is empty */
 static inline bool ncr710_scsi_fifo_empty(NCR710_SCSI_FIFO *fifo)
 {
     return fifo->count == 0;
 }
 
-/* Check if SCSI FIFO is full */
 static inline bool ncr710_scsi_fifo_full(NCR710_SCSI_FIFO *fifo)
 {
     return fifo->count == NCR710_SCSI_FIFO_SIZE;
 }
 
-/* Enqueue a byte with its parity bit into the SCSI FIFO (add at tail) */
 static inline int ncr710_scsi_fifo_enqueue(NCR710_SCSI_FIFO *fifo, uint8_t data, uint8_t parity)
 {
     if (ncr710_scsi_fifo_full(fifo)) {
@@ -597,7 +568,6 @@ static inline int ncr710_scsi_fifo_enqueue(NCR710_SCSI_FIFO *fifo, uint8_t data,
     return 0;
 }
 
-/* Dequeue a byte and its parity bit from the SCSI FIFO (remove from head) */
 static inline uint8_t ncr710_scsi_fifo_dequeue(NCR710_SCSI_FIFO *fifo, uint8_t *parity)
 {
     uint8_t data;
@@ -628,7 +598,7 @@ static inline uint32_t ncr710_read_dword(NCR710State *s, uint32_t addr)
     /* The NCR710 datasheet saying "operates internally in LE mode"
     * refers to its internal register organization,
     * not how it reads SCRIPTS from host memory.
-    * This was intiallhy confusing.
+    * This was intially confusing.
     */
     buf = be32_to_cpu(buf);
     DPRINTF("Read dword %08x from %08x\n", buf, addr);
@@ -713,7 +683,6 @@ static void ncr710_update_irq(NCR710State *s)
     }
 }
 
-/* Stop SCRIPTS execution and raise a SCSI interrupt.  */
 static void ncr710_script_scsi_interrupt(NCR710State *s, int stat0)
 {
     uint32_t mask0;
@@ -745,7 +714,6 @@ void ncr710_completion_irq_callback(void *opaque)
     ncr710_stop_script(s);
 }
 
-/* Stop SCRIPTS execution and raise a DMA interrupt.  */
 static void ncr710_script_dma_interrupt(NCR710State *s, int stat)
 {
     DPRINTF("DMA Interrupt 0x%x prev 0x%x\n", stat, s->dstat);
@@ -801,8 +769,6 @@ static void ncr710_bad_selection(NCR710State *s, uint32_t id)
 {
     DPRINTF("SELECT failed: Target %d not responding\n", id);
 
-    /* Clear ALL DMA interrupt state since selection timeout should be
-     * handled as pure SCSI interrupt, not DMA interrupt */
     s->dstat = 0;  /* Clear all DMA interrupt flags */
     s->dsps = 0;   /* Clear script interrupt data */
 
@@ -904,8 +870,6 @@ void ncr710_request_cancelled(SCSIRequest *req)
 	scsi_req_unref(req);
 }
 
-/* Record that data is available for a queued command.  Returns zero if
-   the device was reselected, nonzero if the IO is deferred.  */
 static int ncr710_queue_req(NCR710State *s, SCSIRequest *req, uint32_t len)
 {
     NCR710Request *p = (NCR710Request*)req->hba_private;
@@ -1048,7 +1012,6 @@ void ncr710_transfer_data(SCSIRequest *req, uint32_t len)
         DPRINTF("Reselection: Set SBCL=0x%02x (I/O=1, MSG=1, CD=1 for MESSAGE IN phase)\n", s->sbcl);
         uint8_t host_id = (s->scid & 0x07);  /* Extract host ID from SCID register (bits 2-0) */
 
-        /* Use Linux-compatible encoding: target 0 = 0x00, target 1 = 0x01, etc. */
         if (req->dev->id == 0 && host_id == 0) {
             /* Special case: both target and host are ID 0 */
             s->sfbr = 0x00;  /* Linux expects 0x00 for target 0 */
@@ -1084,8 +1047,6 @@ void ncr710_transfer_data(SCSIRequest *req, uint32_t len)
             }
         }
 
-        /* Keep DSP at current position (resume_offset) - driver will read it and
-         * then jump to GetReselectionData or GetReselectionWithTag */
         DPRINTF("Reselection: DSP remains at 0x%08x (resume_offset)\n", s->dsp);
 
         s->sstat0 |= NCR710_SSTAT0_SEL;  /* Set SELECTED bit */
@@ -1098,8 +1059,6 @@ void ncr710_transfer_data(SCSIRequest *req, uint32_t len)
         DPRINTF("Reselection: Driver will execute GetReselectionData SCRIPTS\n");
         DPRINTF("===== END RESELECTION EVENT =====\n");
 
-        /* Don't continue script execution here - let driver handle reselection interrupt
-         * and manually jump to GetReselectionData SCRIPTS */
         s->waiting = 0;  /* Clear waiting flag - reselection is now driver's responsibility */
         return;
     }
@@ -1190,7 +1149,6 @@ static void ncr710_do_command(NCR710State *s)
                idbitstonum(id));
         fflush(stdout);
     }
-    /* Special handling for problematic commands */
     s->command_complete = 0;
 
     id = (s->select_tag >> 8) & 0xff;
@@ -1343,7 +1301,7 @@ static void ncr710_do_msgout(NCR710State *s)
         current_req = s->current;
     } else {
         current_tag = s->select_tag;
-        current_req = NULL;  /* No queue to search - kernel manages commands */
+        current_req = NULL;
     }
 
     DPRINTF("MSG out len=%d\n", s->dbc);
@@ -1402,7 +1360,7 @@ static void ncr710_do_msgout(NCR710State *s)
             switch (msg) {
             case SCSI_MSG_COMMAND_COMPLETE: /* 0x00 - NOP / padding byte / Command Complete */
                 DPRINTF("MSG: Command Complete/NOP/padding byte (0x%02x)\n", msg);
-                /* Just ignore padding bytes, continue processing */
+                /* Just gonna ignore padding bytes, continue processing */
                 break;
 
             case SCSI_MSG_DISCONNECT: /* 0x04 - Disconnect */
@@ -1465,7 +1423,6 @@ static void ncr710_do_msgout(NCR710State *s)
                     }
                     break;
                 default:
-                    /* Unknown extended message: reject */
                     goto bad;
                 }
                 break;
@@ -1520,7 +1477,6 @@ static void ncr710_do_msgout(NCR710State *s)
                 if (s->current) {
                     scsi_req_cancel(s->current->req);
                 }
-                /* Kernel manages queue - device only handles current command */
                 ncr710_disconnect(s);
                 break;
 
@@ -1542,8 +1498,6 @@ static void ncr710_do_msgout(NCR710State *s)
         }
 
     out_chunk:
-        /* If we broke early due to incomplete extended message parameters,
-           the outer while will refill and continue parsing */
         continue;
     }
 
@@ -1562,7 +1516,7 @@ static void ncr710_memcpy(NCR710State *s, uint32_t dest, uint32_t src, int count
     DPRINTF("SCRIPTS MEMCPY: dest=0x%08x src=0x%08x count=%d (DSP=0x%08x)\n",
             dest, src, count, s->dsp);
 
-    /* Direct memory to memory transfer using temporary buffer like reference implementation */
+    /* Direct memory to memory transfer using temporary buffer sorta hackish */
     #define NCR710_BUF_SIZE 4096
     uint8_t buf[NCR710_BUF_SIZE];
 
@@ -1595,8 +1549,8 @@ static void ncr710_wait_reselect(NCR710State *s)
     s->scntl1 &= ~NCR710_SCNTL1_CON;
     s->istat &= ~NCR710_ISTAT_CON;
 
-    DPRINTF("WAIT RESELECT: SCRIPTS paused, waiting for device to reselect\n");
-    DPRINTF("WAIT RESELECT: DSP=0x%08x (will resume here after reselection)\n", s->dsp);
+    DPRINTF("WAIT RESELECT: SCRIPTS paused, waiting for device to reselect \
+        DSP=0x%08x (will resume here after reselection)\n", s->dsp);
 }
 
 /* Timer callback to continue script execution */
@@ -2052,7 +2006,7 @@ again:
                     break;
                 case 3: /* Interrupt */
                     DPRINTF("Interrupt 0x%08x\n", s->dsps);
-                    /* Decode common interrupt codes using new constants */
+                    /* Debug: Decode common interrupt codes using constants */
                     switch (s->dsps) {
                     case MSG_IN_BEFORE_CMD: /* 0x250 */
                         DPRINTF("SCRIPTS: Message In received before Command phase (normal)\n");
@@ -2186,7 +2140,6 @@ again:
         }
     }
 
-    /* Continue script execution if still active and not waiting */
     if (s->script_active && s->waiting == 0) {
         if (s->dcntl & NCR710_DCNTL_SSM) {
             ncr710_script_dma_interrupt(s, NCR710_DSTAT_SSI);
@@ -2196,7 +2149,6 @@ again:
         }
     } else if (s->waiting == 1) {
         DPRINTF("SCRIPTS waiting for DMA/transfer_data, keeping script active\n");
-        /* Keep script active - it will be resumed when transfer_data is called */
         return;
     } else if (s->waiting == 2 || s->waiting == 3) {
         if (s->command_complete == 2) {
@@ -2310,7 +2262,6 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             if (s->waiting == 1 && s->current && s->current->pending > 0) {
                 DPRINTF("DSTAT cleared with queued reselection: Scheduling deferred retry for tag=0x%x (pending=%d)\n",
                         s->current->tag, s->current->pending);
-                /* Schedule timer to fire immediately (next event loop iteration) */
                 timer_mod(s->reselection_retry_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
             }
 
@@ -2332,11 +2283,7 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             return ret;
         case NCR710_SSTAT0_REG: /* SSTAT0 */
             ret = s->sstat0;
-            /* For selection timeouts, we don't clear SSTAT0 immediately on read.
-             * Linux needs to read the value and then use it for processing.
-             * We'll clear it later when the interrupt is fully processed. */
             if (s->sstat0 != 0 && !(s->sstat0 & NCR710_SSTAT0_STO)) {
-                /* Clear non-selection-timeout SCSI interrupts immediately */
                 s->sstat0 = 0;
                 s->istat &= ~NCR710_ISTAT_SIP;
                 ncr710_update_irq(s);
@@ -2345,8 +2292,6 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
                     s->sbcl = 0;
                 }
             }
-            /* Note: Selection timeout (STO) will be cleared when Linux writes to
-             * a register or when the next command starts */
             break;
         case NCR710_SSTAT1_REG: /* SSTAT1 */
             ret = s->sstat0;
@@ -2373,7 +2318,6 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_CTEST2_REG: /* CTEST2 */
             ret = s->ctest2;
-            /* DMA FIFO is always empty in direct transfer mode */
             s->ctest2 |= 0x04;
             break;
         case NCR710_CTEST3_REG: /* CTEST3 */
@@ -2396,14 +2340,12 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
             break;
         case NCR710_CTEST6_REG: /* CTEST6 */
             ret = s->ctest6;
-            /* No DMA FIFO to pop with direct transfers */
             break;
         case NCR710_CTEST7_REG: /* CTEST7 */
             ret = s->ctest7;
             break;
         CASE_GET_REG32(temp, NCR710_TEMP_REG)
         case NCR710_DFIFO_REG: /* DFIFO */
-            /* With direct transfers, DMA FIFO is always empty */
             ret = s->dfifo;
             s->dfifo = 0;  /* DMA FIFO count is always 0 */
             ret = s->dfifo;
@@ -3032,7 +2974,6 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
     s->ncr710.dcntl &= ~NCR710_DCNTL_COM;
     s->ncr710.scid = 0x80 | NCR710_HOST_ID;
 
-    /* Initialize script timer */
     s->ncr710.script_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          ncr710_script_timer_callback,
                                          &s->ncr710);
@@ -3041,14 +2982,10 @@ static void sysbus_ncr710_realize(DeviceState *dev, Error **errp)
                                                    ncr710_completion_irq_callback,
                                                    &s->ncr710);
 
-    fprintf(stderr, "QEMU: ***** SYSBUS_NCR710_REALIZE: About to initialize reselection timer *****\n");
-    fprintf(stderr, "QEMU: ***** SysBusNCR710State *s = %p, &s->ncr710 = %p *****\n", s, &s->ncr710);
     s->ncr710.reselection_retry_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                                      ncr710_reselection_retry_callback,
                                                      &s->ncr710);
 
-    fprintf(stderr, "QEMU: ***** Initialized s->ncr710.reselection_retry_timer = %p *****\n", s->ncr710.reselection_retry_timer);
-    fprintf(stderr, "QEMU: ***** Verify: Reading back s->ncr710.reselection_retry_timer = %p *****\n", s->ncr710.reselection_retry_timer);
 
     memset(s->ncr710.msg, 0, sizeof(s->ncr710.msg));
 
