@@ -209,6 +209,8 @@ struct NCR710Request {
     bool active;
     uint8_t *dma_buf;          /* DMA buffer pointer */
     bool out;                  /* Direction flag: true for output, false for input */
+    uint32_t resume_offset;    /* SCRIPTS resume point after reselection */
+    uint32_t saved_dnad;       /* Saved DMA address for immediate reselection */
 };
 
 /* NCR710 State structure */
@@ -284,6 +286,13 @@ struct NCR710State {
     /* Script execution timer */
     QEMUTimer *script_timer;
     QEMUTimer *completion_irq_timer;
+    QEMUTimer *reselection_retry_timer;  /* Timer for deferred reselection retry */
+
+    /* FIX #17: Saved DSPS value for delayed interrupt */
+    uint32_t saved_dsps;
+
+    /* FIX #19: Track last DSPS to detect rapid 0x780->0x401 sequence */
+    uint32_t last_dsps_generated;
 
     /* Additional required fields */
     uint32_t select_tag;       /* Select tag for SCSI device selection */
@@ -293,6 +302,8 @@ struct NCR710State {
     bool tolerant_enabled;     /* Tolerant mode enabled flag */
     bool differential_mode;    /* Differential mode flag */
     bool cache_line_burst;     /* Cache line burst flag */
+    uint8_t reselection_id;
+    bool wait_reselect;
 };
 
 /* Define SysBusNCR710State */
@@ -334,5 +345,6 @@ void ncr710_set_phase(NCR710State *s, int phase);
 /* NCR710 script timer callback */
 void ncr710_script_timer_callback(void *opaque);
 void ncr710_completion_irq_callback(void *opaque);
+void ncr710_reselection_retry_callback(void *opaque);
 
 #endif /* HW_NCR53C710_H */
