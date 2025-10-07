@@ -30,21 +30,17 @@
 #define SYSBUS_NCR710_SCSI(obj) \
     OBJECT_CHECK(SysBusNCR710State, (obj), TYPE_SYSBUS_NCR710_SCSI)
 
-#define DEBUG_NCR710
-#define DEBUG_NCR710_REG
-
-#ifdef DEBUG_NCR710
-#define DPRINTF(fmt, ...) \
-    fprintf(stderr,"QEMU: " fmt, ## __VA_ARGS__)
-#define BADF(fmt, ...) \
-    fprintf(stderr,"QEMU: error: " fmt, ## __VA_ARGS__)
+#define ENABLE_DEBUG 0
+#if ENABLE_DEBUG
+#define DBG(x)          x
 #define NCR710_DPRINTF(fmt, ...) \
-    fprintf(stderr,"QEMU: " fmt, ## __VA_ARGS__)
-#else
-#define DPRINTF(fmt, ...) do {} while(0)
+    fprintf(stderr, "QEMU: " fmt, ## __VA_ARGS__)
 #define BADF(fmt, ...) \
-    fprintf(stderr,"QEMU: error: " fmt, ## __VA_ARGS__)
-#define NCR710_DPRINTF(fmt, ...) do {} while(0)
+    fprintf(stderr, "QEMU: error: " fmt, ## __VA_ARGS__)
+#else
+#define DBG(x)          do { } while (0)
+#define NCR710_DPRINTF(fmt, ...) do { } while (0)
+#define BADF(fmt, ...) do { } while (0)
 #endif
 
 /* NCR710 - Little Endian register Ordering */

@@ -55,7 +55,7 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
         hwaddr ncr_addr = addr - 0x100;
         if (size == 1) {
             ncr_addr ^= 3;
-            printf("Reading value to LASI WRAPPER == 0x%lx%s, val=0x%lx, size=%u\n",
+             NCR710_DPRINTF("Reading value to LASI WRAPPER == 0x%lx%s, val=0x%lx, size=%u\n",
                    addr - 0x100, size == 1 ? " (XORed)" : "", val, size);
             val = ncr710_reg_read(&s->ncr710, ncr_addr, size);
         } else {
@@ -63,10 +63,10 @@ static uint64_t lasi_ncr710_reg_read(void *opaque, hwaddr addr,
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte_val = ncr710_reg_read(&s->ncr710, ncr_addr + i, 1);
                 val |= ((uint64_t)byte_val) << (i * 8);
-                printf("  Read byte %u from NCR addr 0x%lx: 0x%02x\n",
+                 NCR710_DPRINTF("  Read byte %u from NCR addr 0x%lx: 0x%02x\n",
                        i, ncr_addr + i, byte_val);
             }
-            printf("  Reconstructed %u-byte value: 0x%lx\n", size, val);
+             NCR710_DPRINTF("  Reconstructed %u-byte value: 0x%lx\n", size, val);
         }
 
         trace_lasi_ncr710_reg_forward_read(addr, val);
@@ -92,13 +92,13 @@ static void lasi_ncr710_reg_write(void *opaque, hwaddr addr, uint64_t val, unsig
 
         if (size == 1) {
             ncr_addr ^= 3;
-            printf("Writing value to LASI WRAPPER == 0x%lx%s, val=0x%lx, size=%u\n",
+             NCR710_DPRINTF("Writing value to LASI WRAPPER == 0x%lx%s, val=0x%lx, size=%u\n",
                    addr - 0x100, size == 1 ? " (XORed)" : "", val, size);
             ncr710_reg_write(&s->ncr710, ncr_addr, val, size);
         } else {
             for (unsigned i = 0; i < size; i++) {
                 uint8_t byte_val = (val >> (i * 8)) & 0xff;
-                printf("  Writing byte %u to NCR addr 0x%lx: 0x%02x\n",
+                 NCR710_DPRINTF("  Writing byte %u to NCR addr 0x%lx: 0x%02x\n",
                        i, ncr_addr + i, byte_val);
                 ncr710_reg_write(&s->ncr710, ncr_addr + i, byte_val, 1);
             }
