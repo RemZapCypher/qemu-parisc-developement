@@ -1882,7 +1882,7 @@ again:
             uint8_t data8;
             int reg;
             int xoperator;
-#ifdef ENABLE_DEBUG
+#if ENABLE_DEBUG
             static const char *opcode_names[3] =
                 {"Write", "Read", "Read-Modify-Write"};
             static const char *operator_names[8] =
