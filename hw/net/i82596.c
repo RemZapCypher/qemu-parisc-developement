@@ -2,7 +2,8 @@
  * QEMU Intel i82596 (Apricot) emulation
  *
  * Copyright (c) 2019 Helge Deller <deller@gmx.de>
- * Additional improvement by Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
+ * Additional functionality added by: 
+ * Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
  * This work is licensed under the GNU GPL license version 2 or later.
  *
  * This software was written to be compatible with the specification:
@@ -203,7 +204,7 @@ struct qemu_ether_header {
 
 
 /*
- * Mode Transition of address function
+ * Mode Transition of address functionality.
  * Note: As of now the 82596 is tested only for Linear Mode as it is most
  * widely used by Linux and HPUX systems. This function is here for futureproofing
  * our 82596 device model.
@@ -1322,7 +1323,7 @@ uint32_t i82596_ioport_readw(void *opaque, uint32_t addr)
 static void i82596_self_test(I82596State *s, uint32_t val)
 {
     DBG(printf("Performing Self test\n"));
-    set_uint32(val, 0xFFC00000);  /* Success signature */
+    set_uint32(val, 0xFFC00000);
     set_uint32(val + 4, 0);
 
     s->scb_status &= ~SCB_STATUS_CNA;
