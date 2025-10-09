@@ -33,6 +33,15 @@
  * 13. LASI interface
  * 14. Polling functions
  * 15. QOM and interface functions
+ * 
+ * TODO:
+ * [ ] Implement proper Rx and Tx functions. Use the kernel side debug to get as much info as possible, then proceed.
+ * [ ] Add support for the dump functions.
+ * [ ] Adding monitor mode config
+ * [ ] Unified Error Recording
+ * [ ] Unified CRC Functionality
+ * [ ] Unified Error Recording
+ * 
  */
 
 #include "qemu/osdep.h"
@@ -162,6 +171,18 @@ static int rx_copybreak = 100;
 #define I596_FULL_DUPLEX    (s->config[12] & 0x40)          /* Full-duplex mode if set, half if clear */
 #define I596_MULTIIA        (s->config[13] & 0x40)          /* Enable multiple individual addresses */
 
+
+/*Design the Rx functions
+ * For the Rx functions
+ * struct i82596_rx_frame_descriptor
+ * struct i82596_rx_buffer_descriptor
+ * rx_buffer[PKT_BUF_SZ]
+ *
+ * 
+ * 
+ */
+
+
 /* RX ERRORS */
 #define RX_COLLISIONS         0x0001  /* Collision detected during frame reception */
 #define RX_LENGTH_ERRORS      0x0080  /* Frame length error during reception */
@@ -179,6 +200,63 @@ static int rx_copybreak = 100;
 #define TX_CARRIER_ERRORS   0x0400  /* Carrier sense signal lost during transmission */
 #define TX_COLLISIONS_ALT   0x0800  /* Frame experienced collisions during transmission */
 #define TX_ABORTED_ERRORS   0x1000  /* Transmission aborted due to excessive collisions */
+
+/* Unified: Error recording function */
+static void i82596_record_error(I82596State *s, uint16_t error_type)
+{
+    switch (error_type) {
+    case RX_CRC_ERRORS:
+        s->crc_err++;
+        break;
+    case RX_LENGTH_ERRORS:
+    case RX_LENGTH_ERRORS_ALT:
+        s->align_err++;
+        break;
+    case RFD_STATUS_NOBUFS:
+        s->resource_err++;
+        break;
+    case RX_OVER_ERRORS:
+    case RX_FIFO_ERRORS:
+        s->over_err++;
+        break;
+    case RFD_STATUS_TRUNC:
+        s->short_fr_error++;
+        break;
+    default:
+        DBG(printf("Unknown error type: 0x%04x\n", error_type));
+        return;
+    }
+    DBG(printf("Error recorded: type=0x%04x, crc=%d, align=%d, resource=%d, over=%d\n",
+               error_type, s->crc_err, s->align_err, s->resource_err, s->over_err));
+}
+
+
+
+
+/* Design the Tx functions
+ * from what we know, the initial tfd + 0 passes the values to the kernel
+ * so we need a function that determines the error
+ * and passes the required values to the kernel side
+ * 
+ * For the Tx functions
+ * struct i82596_tx_frame_descriptor
+ * struct i82596_tx_buffer_descriptor
+ * tx_buffer[PKT_BUF_SZ]
+ *
+ * i82596_tx_max_collisions(s, tx_status): We can pass it the tx frame and it will update the statistics
+ * and pass it back
+ * 
+ * i82596_tx_status_tracker(s, tx_status): This will take the status bits of the tx frame
+ * and then pass the required values to it and then update the kernel side.
+ * 
+ * i82596_desc_read(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will load the frame from the memory
+ * Making it easier for us to parse the values.
+ * i82596_desc_write(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will write the frame back to the memory
+ * 
+ * We also need similar debug functions to tulip for the Tx and the Rx functions
+ * i82596_dump_tx_descriptor: This will dump the contents of the Tx descriptor
+ * i82596_dump_rx_descriptor: This will dump the contents of the Rx descriptor
+ */
 
 /* Forward declarations: Helps reorganise the code for better readability */
 static void i82596_bus_throttle_timer(void *opaque);
@@ -230,6 +308,100 @@ static void set_uint32(uint32_t addr, uint32_t val)
     set_uint16(addr + 2, val >> 16);
 }
 
+static void i82596_tx_desc_read(I82596State *s, hwaddr addr, 
+                                struct i82596_tx_descriptor *desc)
+{
+    desc->status = get_uint16(addr + 0);
+    desc->command = get_uint16(addr + 2);
+    desc->link = get_uint32(addr + 4);
+    desc->tbd_addr = get_uint32(addr + 8);
+    desc->tcb_count = get_uint16(addr + 12);
+    desc->pad = get_uint16(addr + 14);
+}
+
+static void i82596_tx_desc_write(I82596State *s, hwaddr addr,
+                                 struct i82596_tx_descriptor *desc)
+{
+    set_uint16(addr + 0, desc->status);
+    set_uint16(addr + 2, desc->command);
+    set_uint32(addr + 4, desc->link);
+    set_uint32(addr + 8, desc->tbd_addr);
+    set_uint16(addr + 12, desc->tcb_count);
+    set_uint16(addr + 14, desc->pad);
+}
+
+static void i82596_tbd_read(I82596State *s, hwaddr addr,
+                            struct i82596_tx_buffer_desc *tbd)
+{
+    tbd->size = get_uint16(addr + 0);
+    tbd->pad = get_uint16(addr + 2);
+    tbd->link = get_uint32(addr + 4);
+    tbd->buffer = get_uint32(addr + 8);
+}
+
+//TODO: Implement with RX function
+static void __attribute__((unused)) i82596_rx_desc_read(I82596State *s, hwaddr addr,
+                                struct i82596_rx_descriptor *desc)
+{
+    desc->status = get_uint16(addr + 0);
+    desc->command = get_uint16(addr + 2);
+    desc->link = get_uint32(addr + 4);
+    desc->rbd_addr = get_uint32(addr + 8);
+    desc->actual_count = get_uint16(addr + 12);
+    desc->size = get_uint16(addr + 14);
+}
+
+static void i82596_rx_desc_write(I82596State *s, hwaddr addr,
+                                 struct i82596_rx_descriptor *desc)
+{
+    set_uint16(addr + 0, desc->status);
+    set_uint16(addr + 2, desc->command);
+    set_uint32(addr + 4, desc->link);
+    set_uint32(addr + 8, desc->rbd_addr);
+    set_uint16(addr + 12, desc->actual_count);
+    set_uint16(addr + 14, desc->size);
+}
+
+static void i82596_rbd_read(I82596State *s, hwaddr addr,
+                            struct i82596_rx_buffer_desc *rbd)
+{
+    rbd->count = get_uint16(addr + 0);
+    rbd->pad = get_uint16(addr + 2);
+    rbd->link = get_uint32(addr + 4);
+    rbd->buffer = get_uint32(addr + 8);
+    rbd->size = get_uint16(addr + 12);
+    rbd->pad2 = get_uint16(addr + 14);
+}
+
+static void i82596_rbd_write(I82596State *s, hwaddr addr,
+                             struct i82596_rx_buffer_desc *rbd)
+{
+    set_uint16(addr + 0, rbd->count);
+    set_uint16(addr + 2, rbd->pad);
+    set_uint32(addr + 4, rbd->link);
+    set_uint32(addr + 8, rbd->buffer);
+    set_uint16(addr + 12, rbd->size);
+    set_uint16(addr + 14, rbd->pad2);
+}
+
+static void i82596_dump_tx_descriptor(I82596State *s, hwaddr addr,
+                                      struct i82596_tx_descriptor *desc)
+{
+    DBG(printf("TFD @0x%08lx: status=0x%04x cmd=0x%04x link=0x%08x "
+               "tbd=0x%08x count=%d\n",
+               (unsigned long)addr, desc->status, desc->command, 
+               desc->link, desc->tbd_addr, desc->tcb_count));
+}
+
+static void i82596_dump_rx_descriptor(I82596State *s, hwaddr addr,
+                                      struct i82596_rx_descriptor *desc)
+{
+    DBG(printf("RFD @0x%08lx: status=0x%04x cmd=0x%04x link=0x%08x "
+               "rbd=0x%08x count=%d size=%d\n",
+               (unsigned long)addr, desc->status, desc->command,
+               desc->link, desc->rbd_addr, desc->actual_count, desc->size));
+}
+
 
 /* Packet Header Debugger */
 struct qemu_ether_header {
@@ -270,21 +442,6 @@ static void i82596_s_reset(I82596State *s)
     s->lnkst = 0x8000; /* initial link state: up */
     s->ca = s->ca_active = 0;
     s->send_irq = 0;
-    s->t_on = 0xFFFF;
-    s->t_off = 0;
-    s->throttle_state = true;
-
-    if (s->throttle_timer) {
-        timer_del(s->throttle_timer);
-        s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                       i82596_bus_throttle_timer, s);
-        /* Only start timer in half-duplex mode with non-infinite T-ON */
-        if (!I596_FULL_DUPLEX && s->t_on != 0xFFFF) {
-            timer_mod(s->throttle_timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                     s->t_on * NANOSECONDS_PER_MICROSECOND);
-        }
-    }
     
     /* Statistical Counters */
     s->crc_err = 0;
@@ -301,6 +458,18 @@ static void i82596_s_reset(I82596State *s)
     s->tx_collisions = 0;
     s->tx_aborted_errors = 0;
     s->last_tx_len = 0;
+
+    s->t_on = 0xFFFF;
+    s->t_off = 0;
+    s->throttle_state = true;
+    timer_del(s->throttle_timer);
+    s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   i82596_bus_throttle_timer, s);
+    if (!I596_FULL_DUPLEX && s->t_on != 0xFFFF) {
+        timer_mod(s->throttle_timer,
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                 s->t_on * NANOSECONDS_PER_MICROSECOND);
+    }
 
     qemu_set_irq(s->irq, 1); /* Here, we confirm to the driver done reset */
 }
@@ -356,216 +525,260 @@ static inline uint32_t i82596_translate_address(I82596State *s, uint32_t addr, b
     }
 }
 
+
+static int i82596_tx_copy_buffers(I82596State *s, hwaddr tfd_addr,
+                                  struct i82596_tx_descriptor *desc)
+{
+    bool simplified_mode = !(desc->command & CMD_FLEX);
+    uint32_t total_len = 0;
+    uint32_t tbd_addr;
+    struct i82596_tx_buffer_desc tbd;
+    
+    s->tx_frame_len = 0;
+    
+    if (simplified_mode) {
+        /* Simplified mode: data follows TFD header */
+        uint16_t frame_len = desc->tcb_count & SIZE_MASK;
+        
+        DBG(printf("TX: Simplified mode, reading %d bytes from TFD\n", frame_len));
+        
+        if (frame_len == 0 || frame_len > sizeof(s->tx_buffer)) {
+            DBG(printf("TX: Invalid frame length %d\n", frame_len));
+            return -1;
+        }
+        
+        /* Data starts at offset 16 in TFD */
+        address_space_read(&address_space_memory, tfd_addr + 16,
+                          MEMTXATTRS_UNSPECIFIED, s->tx_buffer, frame_len);
+        total_len = frame_len;
+        
+    } else {
+        /* Flexible mode: follow TBD chain */
+        tbd_addr = desc->tbd_addr;
+        
+        while (tbd_addr != I596_NULL && tbd_addr != 0) {
+            uint16_t buf_size;
+            uint32_t buf_addr;
+            
+            /* Translate and validate TBD address */
+            tbd_addr = i82596_translate_address(s, tbd_addr, false);
+            if (tbd_addr == 0 || tbd_addr == I596_NULL) {
+                DBG(printf("TX: Invalid TBD address\n"));
+                return -1;
+            }
+            
+            /* Read TBD */
+            i82596_tbd_read(s, tbd_addr, &tbd);
+            
+            buf_size = tbd.size & SIZE_MASK;
+            buf_addr = i82596_translate_address(s, tbd.buffer, true);
+            
+            /* Dump TBD details */
+            DBG(printf("  TBD @0x%08x: size=0x%04x(mask=0x%04x) len=%d buf_addr=0x%08x EOF=%d link=0x%08x\n",
+                       tbd_addr, tbd.size, SIZE_MASK, buf_size, buf_addr, 
+                       !!(tbd.size & I596_EOF), tbd.link));
+            
+            /* Check buffer space */
+            if (total_len + buf_size > sizeof(s->tx_buffer)) {
+                DBG(printf("TX: Buffer overflow, max=%zu current=%d adding=%d\n",
+                           sizeof(s->tx_buffer), total_len, buf_size));
+                return -1;
+            }
+            
+            /* Copy buffer data */
+            if (buf_size > 0 && buf_addr != 0 && buf_addr != I596_NULL) {
+                address_space_read(&address_space_memory, buf_addr,
+                                  MEMTXATTRS_UNSPECIFIED,
+                                  s->tx_buffer + total_len, buf_size);
+                total_len += buf_size;
+            }
+            
+            /* Check for end of frame */
+            if (tbd.size & I596_EOF) {
+                break;
+            }
+            
+            /* Move to next TBD */
+            tbd_addr = tbd.link;
+        }
+    }
+    
+    s->tx_frame_len = total_len;
+    return total_len;
+}
+
+static int i82596_tx_process_frame(I82596State *s, bool insert_crc)
+{
+    uint32_t total_len = s->tx_frame_len;
+    
+    if (total_len == 0) {
+        return 0;
+    }
+    
+    /* Insert source MAC address if required */
+    if (I596_NO_SRC_ADD_IN == 0 && total_len >= ETH_ALEN * 2) {
+        memcpy(&s->tx_buffer[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
+        DBG(printf("TX: Inserted source MAC address\n"));
+    }
+    
+    /* Add padding if frame is too short */
+    if (I596_PADDING && total_len < I596_MIN_FRAME_LEN) {
+        size_t pad_len = I596_MIN_FRAME_LEN - total_len;
+        memset(s->tx_buffer + total_len, 0, pad_len);
+        total_len = I596_MIN_FRAME_LEN;
+        DBG(printf("TX: Added %zu bytes of padding\n", pad_len));
+    }
+    
+    /* Calculate and append CRC if required */
+    if (insert_crc) {
+        total_len = i82596_append_crc(s, s->tx_buffer, total_len);
+        DBG(printf("TX: CRC appended, total length now %d\n", (int)total_len));
+    }
+    
+    s->tx_frame_len = total_len;
+    return total_len;
+}
+
+static void i82596_tx_update_status(I82596State *s, hwaddr tfd_addr,
+                                    struct i82596_tx_descriptor *desc,
+                                    uint16_t tx_status, uint16_t collision_count,
+                                    bool success)
+{
+    /* Build status word */
+    desc->status = STAT_C;  /* Command complete */
+    
+    if (success) {
+        desc->status |= STAT_OK;
+    } else {
+        desc->status |= STAT_A;  /* Abort */
+    }
+    
+    /* Add collision count in lower byte (bits 0-3) */
+    if (collision_count > 0) {
+        desc->status |= (collision_count & 0x0F);
+    }
+    
+    /* Store detailed TX status in pad field (offset +14) */
+    desc->pad = tx_status;
+    
+    /* Write descriptor back to memory */
+    i82596_tx_desc_write(s, tfd_addr, desc);
+    
+    DBG(printf("TX: Updated TFD status=0x%04x tx_status=0x%04x collisions=%d\n",
+               desc->status, tx_status, collision_count));
+}
+
+static int i82596_tx_csma_cd(I82596State *s, uint16_t *tx_status)
+{
+    int retry_count = 0;
+    bool medium_available;
+    
+    /* Skip CSMA/CD in full-duplex or loopback mode */
+    if (I596_FULL_DUPLEX || I596_LOOPBACK) {
+        return 0;
+    }
+    
+    /* Try to access medium with exponential backoff */
+    while (retry_count < CSMA_MAX_RETRIES) {
+        medium_available = i82596_check_medium_status(s);
+        
+        if (medium_available) {
+            break;
+        }
+        
+        /* Medium busy - perform backoff */
+        int backoff_time = i82596_csma_backoff(s, retry_count);
+        
+        DBG(printf("CSMA/CD: Collision detected, backoff=%d µs (retry %d/%d)\n",
+                   backoff_time, retry_count + 1, CSMA_MAX_RETRIES));
+        
+        retry_count++;
+        s->total_collisions++;
+    }
+    
+    /* Check for excessive collisions */
+    if (retry_count >= CSMA_MAX_RETRIES) {
+        DBG(printf("CSMA/CD: Excessive collisions, aborting transmission\n"));
+        *tx_status |= TX_ABORTED_ERRORS;
+        return -1;
+    }
+    
+    /* Set collision flag if any retries occurred */
+    if (retry_count > 0) {
+        *tx_status |= TX_COLLISIONS;
+        s->collision_events++;
+    }
+    
+    return retry_count;
+}
+
 static void i82596_xmit(I82596State *s, uint32_t addr)
 {
-    uint32_t tdb_p; /* Transmit Buffer Descriptor */
-    uint16_t cmd, tx_status = 0;
-    int insert_crc;
-    int retry_count = 0;
-    bool medium_available = false;
-    bool transmission_success = true;
-    uint32_t total_len = 0;
-    uint8_t *tx_buffer_ptr = s->tx_buffer;
-    size_t buffer_pos = 0;
-    bool simplified_mode = false;
-
-    /* Read command and TBD pointer */
-    tdb_p = get_uint32(addr + 8);
-    cmd = get_uint16(addr + 2);
-    insert_crc = (I596_NOCRC_INS == 0) && ((cmd & 0x10) == 0) && !I596_LOOPBACK;
-
-    /* Check if this is simplified or flexible mode */
-    simplified_mode = !(cmd & CMD_FLEX);
-
-    DBG(printf("TX: Starting transmission, TBD=0x%08x, cmd=0x%04x, mode=%s\n",
-               tdb_p, cmd, simplified_mode ? "simplified" : "flexible"));
-
-    /* CSMA/CD: Only perform medium polling in half-duplex mode */
-    if (!I596_FULL_DUPLEX && !I596_LOOPBACK) {
-        /* Try transmitting with CSMA/CD backoff and retry */
-        while (retry_count < CSMA_MAX_RETRIES) {
-            medium_available = i82596_check_medium_status(s);
-
-            if (medium_available) {
-                break;
-            }
-
-            /* Medium busy or collision, perform backoff */
-            int backoff_time = i82596_csma_backoff(s, retry_count);
-
-            /* Wait for the backoff period (simulated) */
-            if (backoff_time > 0) {
-                DBG(printf("CSMA/CD: Waiting for %d microseconds\n", backoff_time));
-                /* In real hardware this would be a delay, in emulation we just record it */
-            }
-
-            retry_count++;
-            s->total_collisions++;
-        }
-
-        /* Check if we exceeded max retries */
-        if (retry_count >= CSMA_MAX_RETRIES) {
-            DBG(printf("CSMA/CD: Excessive collisions, transmission aborted\n"));
-            tx_status |= TX_ABORTED_ERRORS;
-            transmission_success = false;
-        }
-
-        /* Record collision count in status */
-        if (retry_count > 0) {
-            tx_status |= TX_COLLISIONS;
-            s->collision_events++;
-            DBG(printf("CSMA/CD: Transmission proceeded after %d retries\n", retry_count));
-        }
+    struct i82596_tx_descriptor tfd;
+    hwaddr tfd_addr = addr;
+    uint16_t tx_status = 0;
+    int collision_count = 0;
+    int frame_len;
+    bool success = true;
+    bool insert_crc;
+    
+    DBG(printf("====== TX START: TFD @0x%08x ======\n", addr));
+    
+    i82596_tx_desc_read(s, tfd_addr, &tfd);
+    i82596_dump_tx_descriptor(s, tfd_addr, &tfd); /* For debug*/
+    s->current_tx_desc = tfd_addr;
+    insert_crc = (I596_NOCRC_INS == 0) && ((tfd.command & 0x10) == 0) && !I596_LOOPBACK;
+    collision_count = i82596_tx_csma_cd(s, &tx_status);
+    if (collision_count < 0) {
+        success = false;
+        goto tx_complete;
     }
-
-    /* Process TBD chain - handle both simplified and flexible modes */
-    if (simplified_mode) {
-        /* Simplified mode: Data is in the command block itself */
-        uint16_t frame_len = get_uint16(addr + 12);  /* Frame length from command */
-        uint32_t data_addr = addr + 16;  /* Data starts after command header */
-
-        DBG(printf("TX: Simplified mode, frame_len=%d\n", frame_len));
-
-        if (frame_len > 0 && frame_len <= PKT_BUF_SZ - 8) {
-            address_space_read(&address_space_memory, data_addr,
-                              MEMTXATTRS_UNSPECIFIED, tx_buffer_ptr, frame_len);
-            total_len = frame_len;
-        } else {
-            DBG(printf("TX: Invalid frame length in simplified mode: %d\n", frame_len));
-            tx_status |= TX_ABORTED_ERRORS;
-            transmission_success = false;
-        }
+    frame_len = i82596_tx_copy_buffers(s, tfd_addr, &tfd);
+    if (frame_len < 0) {
+        DBG(printf("TX: Failed to copy buffers\n"));
+        tx_status |= TX_ABORTED_ERRORS;
+        success = false;
+        goto tx_complete;
+    }
+    DBG(printf("TX: Copied %d bytes from descriptors\n", frame_len));
+    frame_len = i82596_tx_process_frame(s, insert_crc);
+    if (frame_len <= 0) {
+        DBG(printf("TX: Frame processing failed\n"));
+        tx_status |= TX_ABORTED_ERRORS;
+        success = false;
+        goto tx_complete;
+    }
+    s->last_tx_len = frame_len;
+    DBG(PRINT_PKTHDR("TX Send", s->tx_buffer));
+    DBG(printf("TX: Transmitting %d bytes\n", frame_len));
+    
+    if (I596_LOOPBACK) {
+        i82596_receive(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
     } else {
-        /* Flexible mode: Process TBD chain */
-        while (tdb_p != I596_NULL && transmission_success) {
-            uint16_t tbd_size, tbd_len;
-            uint32_t tbd_addr;
-
-            /* Translate TBD address */
-            tdb_p = i82596_translate_address(s, tdb_p, false);
-            if (tdb_p == 0 || tdb_p == I596_NULL) {
-                DBG(printf("TX: Invalid TBD address\n"));
-                tx_status |= TX_ABORTED_ERRORS;
-                transmission_success = false;
-                break;
-            }
-
-            /* Read TBD fields */
-            tbd_size = get_uint16(tdb_p);
-            tbd_len = tbd_size & SIZE_MASK;
-            tbd_addr = get_uint32(tdb_p + 8);
-            tbd_addr = i82596_translate_address(s, tbd_addr, true);
-
-            DBG(printf("TX: Processing TBD 0x%08x, size=0x%04x, len=%d, addr=0x%08x\n",
-                       tdb_p, tbd_size, tbd_len, tbd_addr));
-
-            /* Check buffer space */
-            if (buffer_pos + tbd_len > PKT_BUF_SZ - 8) {
-                DBG(printf("TX: Buffer overflow, truncating frame\n"));
-                tx_status |= TX_ABORTED_ERRORS;
-                transmission_success = false;
-                break;
-            }
-
-            /* Copy data from TBD buffer */
-            if (tbd_len > 0 && tbd_addr != 0 && tbd_addr != I596_NULL) {
-                address_space_read(&address_space_memory, tbd_addr,
-                                  MEMTXATTRS_UNSPECIFIED,
-                                  tx_buffer_ptr + buffer_pos, tbd_len);
-                buffer_pos += tbd_len;
-                total_len += tbd_len;
-            }
-
-            /* Check for end of frame */
-            if (tbd_size & I596_EOF) {
-                DBG(printf("TX: End of frame marker found\n"));
-                break;
-            }
-
-            /* Get next TBD */
-            tdb_p = get_uint32(tdb_p + 4);
+        if (s->nic) {
+            qemu_send_packet_raw(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
         }
-    }
-
-    /* Process the frame if transmission should proceed */
-    if (transmission_success && total_len > 0) {
-        /* Insert source MAC address if required */
-        if (I596_NO_SRC_ADD_IN == 0 && total_len >= ETH_ALEN * 2) {
-            memcpy(&tx_buffer_ptr[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
-        }
-
-        /* Add padding if frame is too short */
-        if (I596_PADDING && total_len < I596_MIN_FRAME_LEN) {
-            size_t pad_len = I596_MIN_FRAME_LEN - total_len;
-            memset(tx_buffer_ptr + total_len, 0, pad_len);
-            total_len = I596_MIN_FRAME_LEN;
-            DBG(printf("TX: Added %zu bytes of padding\n", pad_len));
-        }
-
-        /* Calculate and append CRC if required */
-        if (insert_crc) {
-            total_len = i82596_append_crc(s, tx_buffer_ptr, total_len);
-            DBG(printf("TX: CRC appended, total length now %d\n", (int)total_len));
-        }
-
-        /* Store transmission length for statistics */
-        s->last_tx_len = total_len;
-
-        DBG(PRINT_PKTHDR("TX Send", tx_buffer_ptr));
-        DBG(printf("TX: Sending %d bytes (crc_inserted=%d)\n", (int)total_len, insert_crc));
-
-        /* Transmit the frame */
-        switch (I596_LOOPBACK) {
-        case 0:     /* No loopback, send packet */
-            if (s->nic) {
-                qemu_send_packet_raw(qemu_get_queue(s->nic), tx_buffer_ptr, total_len);
-            }
-            break;
-        default:    /* Loopback mode */
-            i82596_receive(qemu_get_queue(s->nic), tx_buffer_ptr, total_len);
-            break;
-        }
-    }
-
-    /* Update command status */
-    uint16_t cmd_status = STAT_C | STAT_OK;  /* Command complete and OK */
-    if (!transmission_success) {
-        cmd_status &= ~STAT_OK;  /* Clear OK bit on failure */
-        cmd_status |= STAT_A;    /* Set abort bit */
-    }
-
-    /* Write status back to command block (TFD+0) */
-    set_uint16(addr, cmd_status);
-    
-    /* Write detailed TX status (TFD+14) */
-    if (tx_status) {
-        set_uint16(addr + 14, tx_status);
     }
     
-    /* Write collision count to TFD+0 lower byte (max collision field) */
-    if (retry_count > 0) {
-        uint16_t tfd_status = get_uint16(addr);
-        tfd_status = (tfd_status & 0xFF00) | (retry_count & 0x0F);
-        set_uint16(addr, tfd_status);
-        DBG(printf("TX: Wrote collision count %d to TFD+0\n", retry_count));
+tx_complete:
+    i82596_tx_update_status(s, tfd_addr, &tfd, tx_status, collision_count, success);
+    i82596_update_statistics(s, true, tx_status, collision_count);
+    if (tfd.command & CMD_INTR) {
+        i82596_update_cu_status(s, tfd.status, true);
     }
-
-    /* Update statistics using unified function */
-    i82596_update_statistics(s, true, tx_status, retry_count);
-
-    /* Generate interrupt if requested */
-    bool generate_interrupt = (cmd & CMD_INTR) != 0;
-    i82596_update_cu_status(s, cmd_status, generate_interrupt);
-
-    DBG(printf("TX: Transmission complete, status=0x%04x, tx_status=0x%04x, collisions=%d\n",
-               cmd_status, tx_status, retry_count));
+    DBG(printf("====== TX END: status=0x%04x success=%d collisions=%d ======\n",
+               tfd.status, success, collision_count));
 }
 
 bool i82596_can_receive(NetClientState *nc)
 {
     I82596State *s = qemu_get_nic_opaque(nc);
 
-    /* In full duplex, we can receive during transmission */
+    /* Note: The Tx taking presidence over Rx in half-duplex mode
+     * is handled in the i82596_check_medium_status() function.
+     * Half duplex: Cannot Rx while in Tx
+     * Full duplex: we can Rx during transmission
+     */
     if (!s->throttle_state && !I596_FULL_DUPLEX) {
         DBG(printf("CAN_RX: FALSE - throttle off in half duplex\n"));
         return false;
@@ -797,16 +1010,25 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         return -1;
     }
 
+    /* Store current RX descriptor address */
+    s->current_rx_desc = rfd_addr;
+
+    /* Read RFD using structured descriptor */
+    struct i82596_rx_descriptor rfd;
+    i82596_rx_desc_read(s, rfd_addr, &rfd);
+    
+    /* Dump RFD for debugging */
+    i82596_dump_rx_descriptor(s, rfd_addr, &rfd);
+
     /* Read RFD command and determine mode */
-    command = get_uint16(rfd_addr + 2);
+    command = rfd.command;
     simplified_mode = !(command & CMD_FLEX);
 
     DBG(printf("RX: Processing in %s mode, RFD=0x%08x, cmd=0x%04x\n",
                simplified_mode ? "simplified" : "flexible", rfd_addr, command));
 
     /* Check if RFD is busy */
-    uint16_t rfd_status = get_uint16(rfd_addr);
-    if (rfd_status & STAT_B) {
+    if (rfd.status & STAT_B) {
         DBG(printf("RX: RFD is busy, cannot receive\n"));
         return -1;
     }
@@ -878,15 +1100,18 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                 while (bytes_copied < target_size && rbd_addr != I596_NULL) {
                     uint16_t rbd_status, rbd_size;
                     uint32_t rbd_buf_addr, next_rbd;
+                    struct i82596_rx_buffer_desc rbd;
 
-                    /* Read RBD fields */
-                    rbd_status = get_uint16(rbd_addr);
-                    rbd_buf_addr = get_uint32(rbd_addr + 8);
-                    rbd_buf_addr = i82596_translate_address(s, rbd_buf_addr, true);
-                    rbd_size = get_uint16(rbd_addr + 12) & SIZE_MASK;
+                    /* Read RBD using structured descriptor */
+                    i82596_rbd_read(s, rbd_addr, &rbd);
+                    
+                    rbd_status = rbd.count;
+                    rbd_buf_addr = i82596_translate_address(s, rbd.buffer, true);
+                    rbd_size = rbd.size & SIZE_MASK;
 
-                    DBG(printf("RX: Processing RBD 0x%08x, buf=0x%08x, size=%d\n",
-                              rbd_addr, rbd_buf_addr, rbd_size));
+                    /* Dump RBD details */
+                    DBG(printf("  RBD @0x%08x: count=0x%04x buf=0x%08x size=%d link=0x%08x\n",
+                              rbd_addr, rbd.count, rbd_buf_addr, rbd_size, rbd.link));
 
                     /* Calculate how much to copy to this RBD */
                     size_t remaining = target_size - bytes_copied;
@@ -901,11 +1126,16 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                     }
 
                     /* Update RBD status */
-                    uint16_t rbd_actual_count = to_copy;
+                    rbd.count = to_copy;
                     if (bytes_copied >= target_size) {
-                        rbd_actual_count |= I596_EOF;  /* Mark end of frame */
+                        rbd.count |= I596_EOF;  /* Mark end of frame */
                     }
-                    set_uint16(rbd_addr, rbd_actual_count);
+                    
+                    /* Write RBD back to memory */
+                    i82596_rbd_write(s, rbd_addr, &rbd);
+                    
+                    DBG(printf("  RBD updated: count=0x%04x (actual=%zu EOF=%d)\n",
+                               rbd.count, to_copy, !!(rbd.count & I596_EOF)));
 
                     /* Move to next RBD if we need more space */
                     if (bytes_copied < target_size) {
@@ -918,7 +1148,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                             break;
                         }
 
-                        next_rbd = get_uint32(rbd_addr + 4);
+                        next_rbd = rbd.link;
                         next_rbd = i82596_translate_address(s, next_rbd, false);
 
                         if (next_rbd == 0 || next_rbd == I596_NULL || next_rbd == rbd_addr) {
@@ -1012,11 +1242,17 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         }
     }
 
-    set_uint16(rfd_addr, status);
+    /* Update RFD status and write back */
+    rfd.status = status;
+    rfd.actual_count = bytes_copied & SIZE_MASK;
+    i82596_rx_desc_write(s, rfd_addr, &rfd);
+    
+    DBG(printf("RX: Final RFD status=0x%04x actual_count=%d\n", 
+               rfd.status, rfd.actual_count));
 
-    /* Advance RFA pointer to next RFD if frauint16_t rx_buffer_len;me was completed successfully */
+    /* Advance RFA pointer to next RFD if frame was completed successfully */
     if (packet_completed) {
-        next_rfd = get_uint32(rfd_addr + 4);  /* Get next RFD pointer */
+        next_rfd = rfd.link;  /* Get next RFD pointer */
         if (next_rfd != I596_NULL && next_rfd != 0) {
             next_rfd = i82596_translate_address(s, next_rfd, false);
             if (next_rfd != 0 && next_rfd != I596_NULL) {
@@ -1924,7 +2160,6 @@ static void examine_scb(I82596State *s)
         break;
     }
 
-    //TODO AM I DOING THIS AGAIN???
     set_uint32(s->scb + 12, s->crc_err);
     set_uint32(s->scb + 16, s->align_err);
     set_uint32(s->scb + 20, s->resource_err);
@@ -2047,42 +2282,6 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
     }
 }
 
-static void i82596_record_error(I82596State *s, uint16_t error_type)
-{
-    /* Update local counters first */
-    switch (error_type) {
-    case RX_CRC_ERRORS:
-        s->crc_err++;
-        break;
-    case RX_LENGTH_ERRORS:
-    case RX_LENGTH_ERRORS_ALT:
-        s->align_err++;
-        break;
-    case RFD_STATUS_NOBUFS:
-        s->resource_err++;
-        break;
-    case RX_OVER_ERRORS:
-    case RX_FIFO_ERRORS:
-        s->over_err++;
-        break;
-    case RFD_STATUS_TRUNC:
-        s->short_fr_error++;
-        break;
-    default:
-        DBG(printf("Unknown error type: 0x%04x\n", error_type));
-        return;
-    }
-
-    /* Update SCB counters immediately */
-    set_uint32(s->scb + 16, s->crc_err);        /* CRC error counter */
-    set_uint32(s->scb + 18, s->align_err);      /* Alignment error counter */
-    set_uint32(s->scb + 20, s->resource_err);   /* Resource error counter */
-    set_uint32(s->scb + 22, s->over_err);       /* Overrun error counter */
-
-    DBG(printf("Error recorded: type=0x%04x, crc=%d, align=%d, resource=%d, over=%d\n",
-               error_type, s->crc_err, s->align_err, s->resource_err, s->over_err));
-}
-
 void i82596_poll(NetClientState *nc, bool enable)
 {
     I82596State *s = qemu_get_nic_opaque(nc);
@@ -2096,8 +2295,6 @@ void i82596_poll(NetClientState *nc, bool enable)
     }
 
     if (s->rx_status == RX_NO_RESOURCES) {
-        /* In a real device, we might try to reclaim resources here
-           For now we just check if we should reset the RU state */
         if (s->cmd_p != I596_NULL) {
             s->rx_status = RX_READY;
             update_scb_status(s);

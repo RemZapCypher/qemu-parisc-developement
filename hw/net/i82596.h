@@ -70,6 +70,53 @@ struct I82596State_st {
     uint32_t total_good_frames;
 
     uint8_t tx_buffer[PKT_BUF_SZ];
+    uint8_t rx_buffer[PKT_BUF_SZ];
+    uint16_t tx_frame_len;
+    uint16_t rx_frame_len;
+    
+    hwaddr current_tx_desc;
+    hwaddr current_rx_desc;
+};
+
+/* i82596 Transmit Frame Descriptor (TFD) */
+struct i82596_tx_descriptor {
+    uint16_t status;          /* Status word */
+    uint16_t command;         /* Command word */
+    uint32_t link;            /* Link to next TFD */
+    uint32_t tbd_addr;        /* TBD address (or data in simplified mode) */
+    uint16_t tcb_count;       /* Actual count (simplified mode) */
+    uint16_t pad;             /* Padding */
+    /* Flexible mode uses separate TBD chain */
+    /* Simplified mode has data here */
+};
+
+/* i82596 Transmit Buffer Descriptor (TBD) */
+struct i82596_tx_buffer_desc {
+    uint16_t size;            /* Buffer size and EOF flag */
+    uint16_t pad;             /* Padding */
+    uint32_t link;            /* Link to next TBD */
+    uint32_t buffer;          /* Buffer address */
+};
+
+/* i82596 Receive Frame Descriptor (RFD) */
+struct i82596_rx_descriptor {
+    uint16_t status;          /* Status word */
+    uint16_t command;         /* Command word */
+    uint32_t link;            /* Link to next RFD */
+    uint32_t rbd_addr;        /* RBD address */
+    uint16_t actual_count;    /* Actual count */
+    uint16_t size;            /* Buffer size */
+    /* Data area follows in simplified mode */
+};
+
+/* i82596 Receive Buffer Descriptor (RBD) */
+struct i82596_rx_buffer_desc {
+    uint16_t count;           /* Count and EOF/F flags */
+    uint16_t pad;             /* Padding */
+    uint32_t link;            /* Link to next RBD */
+    uint32_t buffer;          /* Buffer address */
+    uint16_t size;            /* Buffer size */
+    uint16_t pad2;            /* Padding */
 };
 
 void i82596_h_reset(void *opaque);
