@@ -1616,12 +1616,6 @@ static void i82596_update_scb_irq(I82596State *s, bool trigger)
     }
 }
 
-/**
- * i82596_update_cu_status - Update Command Unit status after command execution
- * @s: Device state
- * @cmd_status: Command status flags
- * @generate_interrupt: Whether to generate an interrupt
- */
 static void i82596_update_cu_status(I82596State *s, uint16_t cmd_status, bool generate_interrupt)
 {
     /* Update CU state based on command completion */
