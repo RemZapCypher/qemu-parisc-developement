@@ -2,6 +2,7 @@
  * LASI NCR710 SCSI I/O Processor
  *
  * Copyright (c) 2025 Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
+ * Under mentorship of Helge Deller <deller@gmx.de>
  *
  * NCR710 SCSI I/O Processor implementation
  * Based on the NCR53C710 Technical Manual Version 3.2, December 2000
@@ -105,14 +106,14 @@
 #define NCR710_SOCL_REQ      0x80
 
 /* SBCL bits same as SOCL */
-#define NCR710_SBCL_IO       NCR710_SOCL_IO
-#define NCR710_SBCL_CD       NCR710_SOCL_CD
-#define NCR710_SBCL_MSG      NCR710_SOCL_MSG
-#define NCR710_SBCL_ATN      NCR710_SOCL_ATN
-#define NCR710_SBCL_SEL      NCR710_SOCL_SEL
-#define NCR710_SBCL_BSY      NCR710_SOCL_BSY
-#define NCR710_SBCL_ACK      NCR710_SOCL_ACK
-#define NCR710_SBCL_REQ      NCR710_SOCL_REQ
+#define NCR710_SBCL_IO       0x01
+#define NCR710_SBCL_CD       0x02
+#define NCR710_SBCL_MSG      0x04
+#define NCR710_SBCL_ATN      0x08
+#define NCR710_SBCL_SEL      0x10
+#define NCR710_SBCL_BSY      0x20
+#define NCR710_SBCL_ACK      0x40
+#define NCR710_SBCL_REQ      0x80
 
 /* DSTAT (0x0C) - DMA Status Register */
 #define NCR710_DSTAT_IID     0x01
