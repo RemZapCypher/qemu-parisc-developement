@@ -146,7 +146,7 @@ static void lasi_ncr710_command_complete(SCSIRequest *req, size_t resid)
 }
 
 static const struct SCSIBusInfo lasi_ncr710_scsi_info = {
-    .tcq = true,
+    .tcq = false,
     .max_target = 8,
     .max_lun = 0,  /* LUN support buggy, eh? */
 
