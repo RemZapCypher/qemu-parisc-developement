@@ -6,6 +6,7 @@
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
 
+#define PACKET_QUEUE_SIZE 8
 #define RX_RING_SIZE    16
 #define PKT_BUF_SZ      1536
 
@@ -76,47 +77,12 @@ struct I82596State_st {
     
     hwaddr current_tx_desc;
     hwaddr current_rx_desc;
-};
-
-/* i82596 Transmit Frame Descriptor (TFD) */
-struct i82596_tx_descriptor {
-    uint16_t status;          /* Status word */
-    uint16_t command;         /* Command word */
-    uint32_t link;            /* Link to next TFD */
-    uint32_t tbd_addr;        /* TBD address (or data in simplified mode) */
-    uint16_t tcb_count;       /* Actual count (simplified mode) */
-    uint16_t pad;             /* Padding */
-    /* Flexible mode uses separate TBD chain */
-    /* Simplified mode has data here */
-};
-
-/* i82596 Transmit Buffer Descriptor (TBD) */
-struct i82596_tx_buffer_desc {
-    uint16_t size;            /* Buffer size and EOF flag */
-    uint16_t pad;             /* Padding */
-    uint32_t link;            /* Link to next TBD */
-    uint32_t buffer;          /* Buffer address */
-};
-
-/* i82596 Receive Frame Descriptor (RFD) */
-struct i82596_rx_descriptor {
-    uint16_t status;          /* Status word */
-    uint16_t command;         /* Command word */
-    uint32_t link;            /* Link to next RFD */
-    uint32_t rbd_addr;        /* RBD address */
-    uint16_t actual_count;    /* Actual count */
-    uint16_t size;            /* Buffer size */
-    /* Data area follows in simplified mode */
-};
-
-/* i82596 Receive Buffer Descriptor (RBD) */
-struct i82596_rx_buffer_desc {
-    uint16_t count;           /* Count and EOF/F flags */
-    uint16_t pad;             /* Padding */
-    uint32_t link;            /* Link to next RBD */
-    uint32_t buffer;          /* Buffer address */
-    uint16_t size;            /* Buffer size */
-    uint16_t pad2;            /* Padding */
+    uint32_t last_good_rfa;
+    uint8_t packet_queue[PACKET_QUEUE_SIZE][PKT_BUF_SZ];
+    size_t packet_queue_len[PACKET_QUEUE_SIZE];
+    int queue_head;  /* Next slot to write */
+    int queue_tail;  /* Next slot to read */
+    int queue_count; /* Number of packets in queue */
 };
 
 void i82596_h_reset(void *opaque);
