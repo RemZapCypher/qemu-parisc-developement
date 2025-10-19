@@ -169,18 +169,6 @@ enum commands {
 #define I596_FULL_DUPLEX    (s->config[12] & 0x40)          /* Full-duplex mode if set, half if clear */
 #define I596_MULTIIA        (s->config[13] & 0x40)          /* Enable multiple individual addresses */
 
-
-/*Design the Rx functions
- * For the Rx functions
- * struct i82596_rx_frame_descriptor
- * struct i82596_rx_buffer_descriptor
- * rx_buffer[PKT_BUF_SZ]
- *
- *
- *
- */
-
-
 /* RX ERRORS */
 #define RX_COLLISIONS         0x0001  /* Collision detected during frame reception */
 #define RX_LENGTH_ERRORS      0x0080  /* Frame length error during reception */
@@ -199,110 +187,6 @@ enum commands {
 #define TX_COLLISIONS_ALT   0x0800  /* Frame experienced collisions during transmission */
 #define TX_ABORTED_ERRORS   0x1000  /* Transmission aborted due to excessive collisions */
 
-struct i82596_tx_descriptor {
-    uint16_t status;          /* +0h: Status word (C, B, OK, A) + collision count */
-    uint16_t command;         /* +2h: Command word (EL, S, I, NC, SF, CMD) */
-    uint32_t link;            /* +4h: Link to next command block */
-    uint32_t tbd_addr;        /* +8h: TBD address (0xFFFFFFFF = no TBDs) */
-    uint16_t tcb_count;       /* +Ch: Byte count in TCB (bits 13:0) + EOF (bit 15) */
-    uint16_t dest_addr01;     /* +Eh: Destination address bytes 0-1 */
-    uint16_t dest_addr23;     /* +10h: Destination address bytes 2-3 */
-    uint16_t dest_addr45;     /* +12h: Destination address bytes 4-5 */
-    /* Optional data follows if TCB COUNT > 0 (Flexible mode with TCB data) */
-};
-
-struct i82596_tx_buffer_desc {
-    uint16_t size;            /* +0h: Buffer size (bits 13:0) + EOF (bit 15) */
-    uint16_t reserved;        /* +2h: Reserved/padding */
-    uint32_t link;            /* +4h: Link to next TBD */
-    uint32_t buffer;          /* +8h: Buffer address (32-bit in linear mode) */
-};
-
-struct i82596_rx_descriptor {
-    uint16_t status;          /* +0h: Status word (C, B, OK, error bits) */
-    uint16_t command;         /* +2h: Command word (EL, S, SF) */
-    uint32_t link;            /* +4h: Link to next RFD */
-    uint32_t rbd_addr;        /* +8h: RBD address (0xFFFFFFFF = Simplified mode) */
-    uint16_t actual_count;    /* +Ch: Actual count (bits 13:0) + EOF + F bits */
-    uint16_t size;            /* +Eh: RFD data area size (bits 13:0) */
-    uint16_t dest_addr01;     /* +10h: Destination address bytes 0-1 */
-    uint16_t dest_addr23;     /* +12h: Destination address bytes 2-3 */
-    uint16_t dest_addr45;     /* +14h: Destination address bytes 4-5 */
-    uint16_t src_addr01;      /* +16h: Source address bytes 0-1 */
-    uint16_t src_addr23;      /* +18h: Source address bytes 2-3 */
-    uint16_t src_addr45;      /* +1Ah: Source address bytes 4-5 */
-    uint16_t length_field;    /* +1Ch: Length field from frame */
-    /* Optional data area follows (size determined by SIZE field) */
-};
-
-struct i82596_rx_buffer_desc {
-    uint16_t count;           /* +0h: Actual count (bits 13:0) + EOF + F bits */
-    uint16_t reserved1;       /* +2h: Reserved */
-    uint32_t link;            /* +4h: Link to next RBD */
-    uint32_t buffer;          /* +8h: Buffer address (32-bit) */
-    uint16_t size;            /* +Ch: Buffer size (bits 13:0) + EL + P bits */
-    uint16_t reserved2;       /* +Eh: Reserved */
-};
-
-
-/* Unified: Error recording function */
-static void i82596_record_error(I82596State *s, uint16_t error_type)
-{
-    switch (error_type) {
-    case RX_CRC_ERRORS:
-        s->crc_err++;
-        break;
-    case RX_LENGTH_ERRORS:
-    case RX_LENGTH_ERRORS_ALT:
-        s->align_err++;
-        break;
-    case RFD_STATUS_NOBUFS:
-        s->resource_err++;
-        break;
-    case RX_OVER_ERRORS:
-    case RX_FIFO_ERRORS:
-        s->over_err++;
-        break;
-    case RFD_STATUS_TRUNC:
-        s->short_fr_error++;
-        break;
-    default:
-        DBG(printf("Unknown error type: 0x%04x\n", error_type));
-        return;
-    }
-    DBG(printf("Error recorded: type=0x%04x, crc=%d, align=%d, resource=%d, over=%d\n",
-               error_type, s->crc_err, s->align_err, s->resource_err, s->over_err));
-}
-
-
-
-
-/* Design the Tx functions
- * from what we know, the initial tfd + 0 passes the values to the kernel
- * so we need a function that determines the error
- * and passes the required values to the kernel side
- *
- * For the Tx functions
- * struct i82596_tx_frame_descriptor
- * struct i82596_tx_buffer_descriptor
- * tx_buffer[PKT_BUF_SZ]
- *
- * i82596_tx_max_collisions(s, tx_status): We can pass it the tx frame and it will update the statistics
- * and pass it back
- *
- * i82596_tx_status_tracker(s, tx_status): This will take the status bits of the tx frame
- * and then pass the required values to it and then update the kernel side.
- *
- * i82596_desc_read(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will load the frame from the memory
- * Making it easier for us to parse the values.
- * i82596_desc_write(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will write the frame back to the memory
- *
- * We also need similar debug functions to tulip for the Tx and the Rx functions
- * i82596_dump_tx_descriptor: This will dump the contents of the Tx descriptor
- * i82596_dump_rx_descriptor: This will dump the contents of the Rx descriptor
- */
-
-/* Forward declarations: Helps reorganise the code for better readability */
 static void i82596_bus_throttle_timer(void *opaque);
 static void i82596_flush_queue_timer(void *opaque);
 static void i82596_update_scb_irq(I82596State *s, bool trigger);
@@ -350,6 +234,148 @@ static void set_uint32(uint32_t addr, uint32_t val)
     set_uint16(addr, (uint16_t) val);
     set_uint16(addr + 2, val >> 16);
 }
+
+static void i82596_record_error(I82596State *s, uint16_t error_type, bool is_tx)
+{
+    if (is_tx) {
+        /* Handle TX-specific errors */
+        if (error_type & TX_ABORTED_ERRORS) {
+            s->tx_aborted_errors++;
+            set_uint32(s->scb + 28, s->tx_aborted_errors);
+            DBG(printf("TX Error: Excessive collisions (aborted), count=%d\n", 
+                       s->tx_aborted_errors));
+        }
+        
+        if (error_type & TX_CARRIER_ERRORS) {
+            DBG(printf("TX Error: Carrier sense lost\n"));
+        }
+        
+        if (error_type & TX_HEARTBEAT_ERRORS) {
+            DBG(printf("TX Error: Heartbeat check failure\n"));
+        }
+    } else {
+        /* Handle RX-specific errors */
+        if (error_type & RX_CRC_ERRORS) {
+            s->crc_err++;
+            set_uint32(s->scb + 16, s->crc_err);
+            DBG(printf("RX Error: CRC error, count=%d\n", s->crc_err));
+        }
+        
+        if (error_type & (RX_LENGTH_ERRORS | RX_LENGTH_ERRORS_ALT | RX_FRAME_ERRORS)) {
+            s->align_err++;
+            set_uint32(s->scb + 18, s->align_err);
+            DBG(printf("RX Error: Alignment/Length error, count=%d\n", s->align_err));
+        }
+        
+        if (error_type & RFD_STATUS_NOBUFS) {
+            s->resource_err++;
+            set_uint32(s->scb + 20, s->resource_err);
+            DBG(printf("RX Error: No buffer resources, count=%d\n", s->resource_err));
+        }
+        
+        if (error_type & (RX_OVER_ERRORS | RX_FIFO_ERRORS)) {
+            s->over_err++;
+            set_uint32(s->scb + 22, s->over_err);
+            DBG(printf("RX Error: Overrun/FIFO error, count=%d\n", s->over_err));
+        }
+        
+        if (error_type & RFD_STATUS_TRUNC) {
+            s->short_fr_error++;
+            set_uint32(s->scb + 26, s->short_fr_error);
+            DBG(printf("RX Error: Frame truncated, count=%d\n", s->short_fr_error));
+        }
+    }
+}
+
+
+
+
+
+
+
+/*Design the Rx functions
+ * For the Rx functions
+ * struct i82596_rx_frame_descriptor
+ * struct i82596_rx_buffer_descriptor
+ * rx_buffer[PKT_BUF_SZ]
+ *
+ *
+ *
+ */
+
+
+
+struct i82596_tx_descriptor {
+    uint16_t status;          /* +0h: Status word (C, B, OK, A) + collision count */
+    uint16_t command;         /* +2h: Command word (EL, S, I, NC, SF, CMD) */
+    uint32_t link;            /* +4h: Link to next command block */
+    uint32_t tbd_addr;        /* +8h: TBD address (0xFFFFFFFF = no TBDs) */
+    uint16_t tcb_count;       /* +Ch: Byte count in TCB (bits 13:0) + EOF (bit 15) */
+    uint16_t dest_addr01;     /* +Eh: Destination address bytes 0-1 */
+    uint16_t dest_addr23;     /* +10h: Destination address bytes 2-3 */
+    uint16_t dest_addr45;     /* +12h: Destination address bytes 4-5 */
+};
+
+struct i82596_tx_buffer_desc {
+    uint16_t size;            /* +0h: Buffer size (bits 13:0) + EOF (bit 15) */
+    uint16_t reserved;        /* +2h: Reserved/padding */
+    uint32_t link;            /* +4h: Link to next TBD */
+    uint32_t buffer;          /* +8h: Buffer address (32-bit in linear mode) */
+};
+
+struct i82596_rx_descriptor {
+    uint16_t status;          /* +0h: Status word (C, B, OK, error bits) */
+    uint16_t command;         /* +2h: Command word (EL, S, SF) */
+    uint32_t link;            /* +4h: Link to next RFD */
+    uint32_t rbd_addr;        /* +8h: RBD address (0xFFFFFFFF = Simplified mode) */
+    uint16_t actual_count;    /* +Ch: Actual count (bits 13:0) + EOF + F bits */
+    uint16_t size;            /* +Eh: RFD data area size (bits 13:0) */
+    uint16_t dest_addr01;     /* +10h: Destination address bytes 0-1 */
+    uint16_t dest_addr23;     /* +12h: Destination address bytes 2-3 */
+    uint16_t dest_addr45;     /* +14h: Destination address bytes 4-5 */
+    uint16_t src_addr01;      /* +16h: Source address bytes 0-1 */
+    uint16_t src_addr23;      /* +18h: Source address bytes 2-3 */
+    uint16_t src_addr45;      /* +1Ah: Source address bytes 4-5 */
+    uint16_t length_field;    /* +1Ch: Length field from frame */
+};
+
+struct i82596_rx_buffer_desc {
+    uint16_t count;           /* +0h: Actual count (bits 13:0) + EOF + F bits */
+    uint16_t reserved1;       /* +2h: Reserved */
+    uint32_t link;            /* +4h: Link to next RBD */
+    uint32_t buffer;          /* +8h: Buffer address (32-bit) */
+    uint16_t size;            /* +Ch: Buffer size (bits 13:0) + EL + P bits */
+    uint16_t reserved2;       /* +Eh: Reserved */
+};
+
+
+/* Design the Tx functions
+ * from what we know, the initial tfd + 0 passes the values to the kernel
+ * so we need a function that determines the error
+ * and passes the required values to the kernel side
+ *
+ * For the Tx functions
+ * struct i82596_tx_frame_descriptor
+ * struct i82596_tx_buffer_descriptor
+ * tx_buffer[PKT_BUF_SZ]
+ *
+ * i82596_tx_max_collisions(s, tx_status): We can pass it the tx frame and it will update the statistics
+ * and pass it back
+ *
+ * i82596_tx_status_tracker(s, tx_status): This will take the status bits of the tx frame
+ * and then pass the required values to it and then update the kernel side.
+ *
+ * i82596_desc_read(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will load the frame from the memory
+ * Making it easier for us to parse the values.
+ * i82596_desc_write(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will write the frame back to the memory
+ *
+ * We also need similar debug functions to tulip for the Tx and the Rx functions
+ * i82596_dump_tx_descriptor: This will dump the contents of the Tx descriptor
+ * i82596_dump_rx_descriptor: This will dump the contents of the Rx descriptor
+ */
+
+/* Forward declarations: Helps reorganise the code for better readability */
+
 
 static void i82596_tx_desc_read(I82596State *s, hwaddr addr,
                                 struct i82596_tx_descriptor *desc)
@@ -1257,7 +1283,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         if (!crc_valid) {
             DBG(printf("RX: WARNING - CRC verification FAILED in loopback\n"));
             rx_status |= RX_CRC_ERRORS;
-            i82596_record_error(s, RX_CRC_ERRORS);
+            i82596_record_error(s, RX_CRC_ERRORS, false);
             s->crc_err++;
 
             if (!SAVE_BAD_FRAMES) {
@@ -1413,7 +1439,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     if (frame_size < 14) {
         DBG(printf("RX: ERROR - Frame too short (%zu bytes), minimum is 14\n", frame_size));
         rx_status |= RX_LENGTH_ERRORS;
-        i82596_record_error(s, RX_LENGTH_ERRORS);
+        i82596_record_error(s, RX_LENGTH_ERRORS, false);
         s->short_fr_error++;
         packet_completed = false;
         goto rx_complete;
@@ -1437,7 +1463,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         if (rfd_size % 2 != 0) {
             DBG(printf("RX: ERROR - RFD size is not even (%d), rejecting\n", rfd_size));
             rx_status |= RX_LENGTH_ERRORS;
-            i82596_record_error(s, RX_LENGTH_ERRORS);
+            i82596_record_error(s, RX_LENGTH_ERRORS, false);
             s->align_err++;
             packet_completed = false;
             goto rx_complete;
@@ -1502,7 +1528,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                 DBG(printf("RX: Cannot receive frame - setting RU to NO_RESOURCES\n"));
 
                 /* Record the error */
-                i82596_record_error(s, RFD_STATUS_NOBUFS);
+                i82596_record_error(s, RFD_STATUS_NOBUFS, false);
                 s->resource_err++;
 
                 /* Set RU state to NO_RESOURCES (stops further reception) */
@@ -1532,7 +1558,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                     DBG(printf("RX: CRITICAL - Ran out of RBDs mid-frame (NO_RESOURCES)\n"));
 
                     /* Record the error */
-                    i82596_record_error(s, RFD_STATUS_NOBUFS);
+                    i82596_record_error(s, RFD_STATUS_NOBUFS, false);
                     s->resource_err++;
 
                     /* Set RU state to NO_RESOURCES */
@@ -1831,11 +1857,6 @@ static int i82596_csma_backoff(I82596State *s, int retry_count)
     return backoff_time;
 }
 
-
-/* Note: Attempt at implementing a unified CRC line ie both the TX and RX functions would make use of the same
- * CRC Subsystem to determine the CRC for the packets this is because of the similarities
- * in the CRC calculation for both TX and RX.
- */
 static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len)
 {
     uint16_t crc = 0xFFFF;
@@ -1856,14 +1877,18 @@ static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len)
 
 static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
 {
+    if (len + 4 > PKT_BUF_SZ) {
+        DBG(printf("CRC: Buffer too small to append CRC\n"));
+        return len;
+    }
+
     if (I596_CRC16_32) {
-        /* Use CRC-32 */
         uint32_t crc = crc32(~0, buffer, len);
         crc = cpu_to_be32(crc);
         memcpy(&buffer[len], &crc, sizeof(crc));
+        DBG(printf("CRC: Appended CRC-32: 0x%08x\n", be32_to_cpu(crc)));
         return len + sizeof(crc);
     } else {
-        /* Use CRC-16 */
         uint16_t crc = i82596_calculate_crc16(buffer, len);
         crc = cpu_to_be16(crc);
         memcpy(&buffer[len], &crc, sizeof(crc));
@@ -1875,17 +1900,33 @@ static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len)
 {
     if (I596_CRC16_32) {
         /* Verify CRC-32 */
-        if (len < 4) return false;
-        uint32_t received_crc = be32_to_cpu(*(uint32_t *)(data + len - 4));
+        if (len < 4) {
+            return false;
+        }
+        uint32_t received_crc = be32_to_cpu(*(const uint32_t *)(data + len - 4));
         uint32_t calculated_crc = crc32(~0, data, len - 4);
-        return received_crc == calculated_crc;
+        bool valid = (received_crc == calculated_crc);
+        DBG(printf("CRC: CRC-32 check: received=0x%08x calculated=0x%08x %s\n",
+                   received_crc, calculated_crc, valid ? "OK" : "FAIL"));
+        return valid;
     } else {
         /* Verify CRC-16 */
-        if (len < 2) return false;
-        uint16_t received_crc = be16_to_cpu(*(uint16_t *)(data + len - 2));
+        if (len < 2) {
+            DBG(printf("CRC: Frame too short for CRC-16 verification\n"));
+            return false;
+        }
+        uint16_t received_crc = be16_to_cpu(*(const uint16_t *)(data + len - 2));
         uint16_t calculated_crc = i82596_calculate_crc16(data, len - 2);
-        return received_crc == calculated_crc;
+        bool valid = (received_crc == calculated_crc);
+        DBG(printf("CRC: CRC-16 check: received=0x%04x calculated=0x%04x %s\n",
+                   received_crc, calculated_crc, valid ? "OK" : "FAIL"));
+        return valid;
     }
+}
+
+static inline size_t i82596_get_crc_size(I82596State *s)
+{
+    return I596_CRC16_32 ? 4 : 2;
 }
 
 
@@ -1922,63 +1963,48 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
 {
     if (is_tx) {
         /* TX Statistics Update */
-
+        
         /* Update collision counters */
         if (collision_count > 0) {
             s->tx_collisions += collision_count;
             s->collision_events++;
             s->total_collisions += collision_count;
+            set_uint32(s->scb + 32, s->tx_collisions);
+            DBG(printf("TX Stats: Collisions=%d (this frame), total=%d, events=%d\n",
+                       collision_count, s->tx_collisions, s->collision_events));
         }
 
-        /* Check for excessive collisions (abort) */
-        if (error_flags & TX_ABORTED_ERRORS) {
-            s->tx_aborted_errors++;
-            set_uint32(s->scb + 28, s->tx_aborted_errors);
+        /* Record errors if present */
+        if (error_flags) {
+            i82596_record_error(s, error_flags, true);
         }
 
-        /* Count successful transmissions */
+        /* Count successful transmissions (no fatal errors) */
         if (!(error_flags & (TX_ABORTED_ERRORS | TX_CARRIER_ERRORS))) {
             s->tx_good_frames++;
+            set_uint32(s->scb + 36, s->tx_good_frames);
         }
 
-        /* Update SCB TX counters */
-        set_uint32(s->scb + 32, s->tx_collisions);     /* Total TX collisions */
-        set_uint32(s->scb + 36, s->tx_good_frames);    /* Good TX frames */
-
-        DBG(printf("TX stats: collisions=%d, aborted=%d, good=%d\n",
-                   s->tx_collisions, s->tx_aborted_errors, s->tx_good_frames));
+        DBG(printf("TX Stats: good_frames=%d, aborted=%d\n",
+                   s->tx_good_frames, s->tx_aborted_errors));
 
     } else {
         /* RX Statistics Update */
+        
+        s->total_frames++;
+        set_uint32(s->scb + 40, s->total_frames);
 
-        /* Update error counters based on error flags */
-        if (error_flags & RX_CRC_ERRORS) {
-            s->crc_err++;
-            set_uint32(s->scb + 16, s->crc_err);
+        /* Record errors if present */
+        if (error_flags) {
+            i82596_record_error(s, error_flags, false);
+        } else {
+            /* No errors - count as good frame */
+            s->total_good_frames++;
+            set_uint32(s->scb + 44, s->total_good_frames);
         }
 
-        if (error_flags & (RX_LENGTH_ERRORS | RX_LENGTH_ERRORS_ALT | RX_FRAME_ERRORS)) {
-            s->align_err++;
-            set_uint32(s->scb + 18, s->align_err);
-        }
-
-        if (error_flags & RFD_STATUS_NOBUFS) {
-            s->resource_err++;
-            set_uint32(s->scb + 20, s->resource_err);
-        }
-
-        if (error_flags & (RX_OVER_ERRORS | RX_FIFO_ERRORS)) {
-            s->over_err++;
-            set_uint32(s->scb + 22, s->over_err);
-        }
-
-        if (error_flags & RFD_STATUS_TRUNC) {
-            s->short_fr_error++;
-            set_uint32(s->scb + 26, s->short_fr_error);
-        }
-
-        DBG(printf("RX stats: crc=%d, align=%d, resource=%d, over=%d\n",
-                   s->crc_err, s->align_err, s->resource_err, s->over_err));
+        DBG(printf("RX Stats: total=%d, good=%d, errors=0x%04x\n",
+                   s->total_frames, s->total_good_frames, error_flags));
     }
 }
 
@@ -2306,179 +2332,140 @@ static void i82596_update_cu_status(I82596State *s, uint16_t cmd_status, bool ge
     update_scb_status(s);
 }
 
-/*
- * Note:
- * When we are updating the SCB we update this values keeps
- * the values in check with the kernel and also updates them frequently.
-*/
+/**
+ * Update SCB Status
+ * Synchronizes device state with SCB status word and statistics counters.
+ * This function is called frequently to keep the kernel driver updated.
+ */
 static void update_scb_status(I82596State *s)
 {
+    /* Update status word with CU state, RU state, and link status */
     s->scb_status = (s->scb_status & 0xf000)
         | (s->cu_status << 8) | (s->rx_status << 4) | (s->lnkst >> 8);
     set_uint16(s->scb, s->scb_status);
-   /* Update TX-related counters */
-   set_uint32(s->scb + 28, s->tx_aborted_errors);  /* TX aborted errors */
-   set_uint32(s->scb + 32, s->tx_collisions);      /* Total collisions */
-   set_uint32(s->scb + 36, s->tx_good_frames);     /* Successfully transmitted frames */
+    
+    /* Update TX-related counters */
+    set_uint32(s->scb + 28, s->tx_aborted_errors);
+    set_uint32(s->scb + 32, s->tx_collisions);
+    set_uint32(s->scb + 36, s->tx_good_frames);
 
-   /* Update RX-related counters */
-   set_uint32(s->scb + 16, s->crc_err);        /* CRC error counter */
-   set_uint32(s->scb + 18, s->align_err);      /* Alignment error counter */
-   set_uint32(s->scb + 20, s->resource_err);   /* Resource error counter */
-   set_uint32(s->scb + 22, s->over_err);       /* Overrun error counter */
-   set_uint32(s->scb + 24, s->rcvdt_err);      /* Receive data timeout counter */
-   set_uint32(s->scb + 26, s->short_fr_error); /* Short frame error counter */
-    //TODO ADD THE REST OF THE TX COUNTERS
+    /* Update RX-related counters */
+    set_uint32(s->scb + 16, s->crc_err);
+    set_uint32(s->scb + 18, s->align_err);
+    set_uint32(s->scb + 20, s->resource_err);
+    set_uint32(s->scb + 22, s->over_err);
+    set_uint32(s->scb + 24, s->rcvdt_err);
+    set_uint32(s->scb + 26, s->short_fr_error);
 }
 
 static void command_loop(I82596State *s)
 {
-    uint16_t cmd, status;
-    uint32_t next_cmd_addr;
-    bool end_processing = false;
-
-    DBG(printf("====== COMMAND LOOP START: CU=%d, cmd_p=0x%08x ======\n",
-               s->cu_status, s->cmd_p));
+    DBG(printf("CMD_LOOP: Start - CU=%d cmd_p=0x%08x\n", s->cu_status, s->cmd_p));
 
     /* Process commands while CU is active and valid command pointer exists */
-    while (s->cmd_p != I596_NULL && s->cmd_p != 0 && s->cu_status == CU_ACTIVE) {
+    while (s->cu_status == CU_ACTIVE && s->cmd_p != I596_NULL && s->cmd_p != 0) {
+        uint16_t status = get_uint16(s->cmd_p);
 
-        /* Read current command status */
-        status = get_uint16(s->cmd_p);
-
-        /* Skip if command already busy or completed */
+        /* Skip already processed commands */
         if (status & (STAT_C | STAT_B)) {
-            DBG(printf("CMD: Skipping already processed command at 0x%08x (status=0x%04x)\n",
-                       s->cmd_p, status));
-
-            next_cmd_addr = get_uint32(s->cmd_p + 4);
-            if (next_cmd_addr == 0 || next_cmd_addr == s->cmd_p) {
-                /* Invalid or circular link - end processing */
+            uint32_t next = get_uint32(s->cmd_p + 4);
+            if (next == 0 || next == s->cmd_p) {
                 s->cmd_p = I596_NULL;
                 s->cu_status = CU_IDLE;
                 s->scb_status |= SCB_STATUS_CNA;
                 break;
             }
-            s->cmd_p = i82596_translate_address(s, next_cmd_addr, false);
+            s->cmd_p = i82596_translate_address(s, next, false);
             continue;
         }
 
         /* Mark command as busy */
-        status = STAT_B;
-        set_uint16(s->cmd_p, status);
+        set_uint16(s->cmd_p, STAT_B);
 
-        /* Read command word and link pointer */
-        cmd = get_uint16(s->cmd_p + 2);
-        next_cmd_addr = get_uint32(s->cmd_p + 4);
+        /* Read command and link */
+        uint16_t cmd = get_uint16(s->cmd_p + 2);
+        uint32_t next_addr = get_uint32(s->cmd_p + 4);
+        
+        DBG(printf("CMD_LOOP: Exec cmd=0x%04x type=%d at 0x%08x\n",
+                   cmd, cmd & CMD_MASK, s->cmd_p));
 
-        DBG(printf("CMD: Executing command 0x%04x at 0x%08x (type=%d)\n",
-                   cmd, s->cmd_p, cmd & CMD_MASK));
-
-        /* Translate next command address */
-        if (next_cmd_addr == 0) {
-            next_cmd_addr = I596_NULL;
-        } else {
-            next_cmd_addr = i82596_translate_address(s, next_cmd_addr, false);
-        }
+        /* Translate next address */
+        next_addr = (next_addr == 0) ? I596_NULL : 
+                    i82596_translate_address(s, next_addr, false);
 
         /* Execute command based on type */
         switch (cmd & CMD_MASK) {
         case CmdNOp:
-            DBG(printf("CMD: NOP\n"));
             break;
-
         case CmdSASetup:
-            DBG(printf("CMD: Set Individual Address\n"));
             set_individual_address(s, s->cmd_p);
             break;
-
         case CmdConfigure:
-            DBG(printf("CMD: Configure\n"));
             i82596_configure(s, s->cmd_p);
             break;
-
         case CmdTDR:
-            DBG(printf("CMD: TDR (Time Domain Reflectometry)\n"));
             set_uint32(s->cmd_p + 8, s->lnkst);
             break;
-
         case CmdTx:
-            DBG(printf("CMD: Transmit\n"));
             i82596_xmit(s, s->cmd_p);
-            /* TX command handles its own status setting */
             goto skip_status_update;
-
         case CmdMulticastList:
-            DBG(printf("CMD: Set Multicast List\n"));
             set_multicast_list(s, s->cmd_p);
             break;
-
         case CmdDump:
-            DBG(printf("CMD: Dump Statistics\n"));
             i82596_command_dump(s, s->cmd_p);
             break;
-
         case CmdDiagnose:
-            DBG(printf("CMD: Diagnose (not fully implemented)\n"));
             break;
-
         default:
-            DBG(printf("CMD: Unknown command type %d\n", cmd & CMD_MASK));
+            DBG(printf("CMD_LOOP: Unknown command %d\n", cmd & CMD_MASK));
             break;
         }
 
-        /* Set command complete status (TX handles this internally) */
+        /* Set command complete status */
         status = get_uint16(s->cmd_p);
         if (!(status & STAT_C)) {
-            status = STAT_C | STAT_OK;
-            set_uint16(s->cmd_p, status);
+            set_uint16(s->cmd_p, STAT_C | STAT_OK);
         }
 
 skip_status_update:
-        end_processing = false;
-
-        /* Handle interrupt flag */
+        /* Handle command flags */
         if (cmd & CMD_INTR) {
             s->scb_status |= SCB_STATUS_CX;
             s->send_irq = 1;
-            DBG(printf("CMD: Interrupt requested\n"));
         }
 
-        /* Handle suspend flag */
+        bool stop = false;
+        
         if (cmd & CMD_SUSP) {
             s->cu_status = CU_SUSPENDED;
             s->scb_status |= SCB_STATUS_CNA;
-            end_processing = true;
-            DBG(printf("CMD: Suspending CU after command\n"));
+            stop = true;
+            DBG(printf("CMD_LOOP: Suspend\n"));
         }
 
-        /* Handle end of list flag */
         if (cmd & CMD_EOL) {
             s->cmd_p = I596_NULL;
             s->cu_status = CU_IDLE;
             s->scb_status |= SCB_STATUS_CNA;
-            end_processing = true;
-            DBG(printf("CMD: End of command list reached\n"));
-        } else {
+            stop = true;
+            DBG(printf("CMD_LOOP: End of list\n"));
+        } else if (!stop) {
             /* Advance to next command */
-            if (next_cmd_addr == 0 || next_cmd_addr == I596_NULL ||
-                next_cmd_addr == s->cmd_p) {
-                /* Invalid next pointer - end processing */
+            if (next_addr == 0 || next_addr == I596_NULL || next_addr == s->cmd_p) {
                 s->cmd_p = I596_NULL;
                 s->cu_status = CU_IDLE;
                 s->scb_status |= SCB_STATUS_CNA;
-                end_processing = true;
-                DBG(printf("CMD: Invalid next command pointer, ending\n"));
+                stop = true;
+                DBG(printf("CMD_LOOP: Invalid next\n"));
             } else {
-                s->cmd_p = next_cmd_addr;
+                s->cmd_p = next_addr;
             }
         }
 
-        /* Update SCB status after each command */
         update_scb_status(s);
 
-        /* Exit loop if processing should end */
-        if (end_processing || s->cu_status != CU_ACTIVE) {
+        if (stop || s->cu_status != CU_ACTIVE) {
             break;
         }
     }
@@ -2486,185 +2473,195 @@ skip_status_update:
     /* Final status update */
     update_scb_status(s);
 
-    /* Flush any queued RX packets if RU is ready */
+    /* Flush RX queue if ready */
     if (s->rx_status == RX_READY && s->nic) {
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
     }
 
-    DBG(printf("====== COMMAND LOOP END: CU=%d, cmd_p=0x%08x ======\n",
-               s->cu_status, s->cmd_p));
+    DBG(printf("CMD_LOOP: End - CU=%d cmd_p=0x%08x\n", s->cu_status, s->cmd_p));
 }
 
 static void examine_scb(I82596State *s)
 {
-    uint16_t command, cuc, ruc;
+    uint16_t command = get_uint16(s->scb + 2);
+    uint8_t cuc = (command >> 8) & 0x7;
+    uint8_t ruc = (command >> 4) & 0x7;
 
-    command = get_uint16(s->scb + 2);
-    cuc = (command >> 8) & 0x7;
-    ruc = (command >> 4) & 0x7;
-    DBG(printf("MAIN COMMAND %04x  cuc %02x ruc %02x\n", command, cuc, ruc));
+    DBG(printf("SCB: command=0x%04x CUC=%d RUC=%d\n", command, cuc, ruc));
 
+    /* Clear command word and acknowledge interrupts */
     set_uint16(s->scb + 2, 0);
     s->scb_status &= ~(command & SCB_ACK_MASK);
+
+    /* Process Command Unit (CU) commands */
     switch (cuc) {
     case SCB_CUC_NOP:
-        /* No operation */
         break;
-    case SCB_CUC_START:
-        /* Start Command Unit */
-        s->cu_status = CU_ACTIVE;
+        
+    case SCB_CUC_START: {
         uint32_t cmd_ptr = get_uint32(s->scb + 4);
         s->cmd_p = i82596_translate_address(s, cmd_ptr, false);
+        s->cu_status = CU_ACTIVE;
+        DBG(printf("SCB: CU Start at 0x%08x\n", s->cmd_p));
         break;
+    }
+    
     case SCB_CUC_RESUME:
-        if (s->cu_status != CU_ACTIVE) {
+        if (s->cu_status == CU_SUSPENDED) {
             s->cu_status = CU_ACTIVE;
+            DBG(printf("SCB: CU Resume\n"));
         }
         break;
+        
     case SCB_CUC_SUSPEND:
         s->cu_status = CU_SUSPENDED;
         s->scb_status |= SCB_STATUS_CNA;
+        DBG(printf("SCB: CU Suspend\n"));
         break;
+        
     case SCB_CUC_ABORT:
         s->cu_status = CU_IDLE;
         s->scb_status |= SCB_STATUS_CNA;
+        DBG(printf("SCB: CU Abort\n"));
         break;
-    case SCB_CUC_LOAD_THROTTLE:
-            bool external_trigger = (s->sysbus & I82586_MODE);
-            i82596_load_throttle_timers(s, !external_trigger);
+        
+    case SCB_CUC_LOAD_THROTTLE: {
+        bool external_trigger = (s->sysbus & I82586_MODE);
+        i82596_load_throttle_timers(s, !external_trigger);
+        DBG(printf("SCB: Load throttle timers (external=%d)\n", external_trigger));
         break;
+    }
+    
     case SCB_CUC_LOAD_START:
-            i82596_load_throttle_timers(s, true);
+        i82596_load_throttle_timers(s, true);
+        DBG(printf("SCB: Load and start throttle timers\n"));
         break;
     }
 
-
+    /* Process Receive Unit (RU) commands */
     switch (ruc) {
     case SCB_RUC_NOP:
-        /* No operation */
         break;
-    case SCB_RUC_START:
-        DBG(printf("RU Start: Validating RFD/RBD availability\n"));
+        
+    case SCB_RUC_START: {
         uint32_t rfd_log = get_uint32(s->scb + 8);
-        uint32_t rfd = i82596_translate_address(s, rfd_log, false);
-        DBG(printf("RU Start: RFA pointer = 0x%08x (logical) -> 0x%08x (physical)\n", rfd_log, (uint32_t)rfd));
+        hwaddr rfd = i82596_translate_address(s, rfd_log, false);
+        
+        DBG(printf("SCB: RU Start - RFA=0x%08x\n", rfd_log));
+        
         if (rfd == 0 || rfd == I596_NULL) {
             s->rx_status = RX_NO_RESOURCES;
             s->scb_status |= SCB_STATUS_RNR;
+            DBG(printf("SCB: RU Start failed - invalid RFA\n"));
+            break;
+        }
+
+        /* Find first usable RFD with valid RBD */
+        struct i82596_rx_descriptor test_rfd;
+        hwaddr test_rfd_addr = rfd;
+        uint32_t test_rfd_log = rfd_log;
+        hwaddr first_usable_rfd = 0;
+        uint32_t first_usable_rfd_log = 0;
+        bool found = false;
+
+        for (int i = 0; i < 10 && test_rfd_addr != 0 && test_rfd_addr != I596_NULL; i++) {
+            i82596_rx_desc_read(s, test_rfd_addr, &test_rfd);
+
+            if (test_rfd.command & CMD_FLEX) {
+                hwaddr rbd = i82596_translate_address(s, test_rfd.rbd_addr, false);
+                if (rbd != I596_NULL && rbd != 0) {
+                    first_usable_rfd = test_rfd_addr;
+                    first_usable_rfd_log = test_rfd_log;
+                    found = true;
+                    DBG(printf("SCB: Found usable RFD at 0x%08x\n", test_rfd_log));
+                    break;
+                }
+            }
+            
+            test_rfd_log = test_rfd.link;
+            test_rfd_addr = i82596_translate_address(s, test_rfd.link, false);
+        }
+
+        if (found) {
+            s->current_rx_desc = first_usable_rfd;
+            s->last_good_rfa = first_usable_rfd_log;
+            s->rx_status = RX_READY;
+
+            /* Update RFA pointer if needed */
+            if (first_usable_rfd != rfd) {
+                set_uint32(s->scb + 8, first_usable_rfd_log);
+            }
+
+            qemu_flush_queued_packets(qemu_get_queue(s->nic));
+            DBG(printf("SCB: RU Ready - RFD=0x%08x\n", first_usable_rfd_log));
         } else {
-            /* Verify that there's at least one RFD with an RBD before starting */
-            struct i82596_rx_descriptor test_rfd;
-            hwaddr test_rfd_addr = rfd;
-            uint32_t test_rfd_log = rfd_log;
-            hwaddr first_usable_rfd = 0;
-            uint32_t first_usable_rfd_log = 0;
-            bool found_usable_rfd = false;
-
-            for (int i = 0; i < 10 && test_rfd_addr != 0 && test_rfd_addr != I596_NULL; i++) {
-                i82596_rx_desc_read(s, test_rfd_addr, &test_rfd);
-
-                /* Check if this RFD has an RBD in Flexible mode */
-                if ((test_rfd.command & CMD_FLEX)) {
-                    hwaddr check_rbd = i82596_translate_address(s, test_rfd.rbd_addr, false);
-                    DBG(printf("RU Start: Checking RFD at 0x%08x, RBD = 0x%08x\n",
-                               (uint32_t)test_rfd_addr, (uint32_t)check_rbd));
-                    if (check_rbd != I596_NULL && check_rbd != 0 && check_rbd != 0xFFFFFFFF) {
-                        found_usable_rfd = true;
-                        first_usable_rfd = test_rfd_addr;
-                        first_usable_rfd_log = test_rfd_log;
-                        DBG(printf("RU Start: Found usable RFD at 0x%08x (logical 0x%08x)\n",
-                                   (uint32_t)first_usable_rfd, first_usable_rfd_log));
-                        break;
-                    }
-                }
-                test_rfd_log = test_rfd.link;
-                test_rfd_addr = i82596_translate_address(s, test_rfd.link, false);
-            }
-
-            if (found_usable_rfd) {
-                s->current_rx_desc = first_usable_rfd;
-                s->last_good_rfa = first_usable_rfd_log;
-
-                /* Reset RFA pointer to the first RFD with RBD to avoid ping-pong */
-                if (first_usable_rfd != rfd) {
-                    set_uint32(s->scb + 8, first_usable_rfd_log);
-                    DBG(printf("RU Start: Reset RFA pointer from 0x%08x to first usable RFD at 0x%08x\n",
-                               rfd_log, first_usable_rfd_log));
-                } else {
-                    DBG(printf("RU Start: RFA already points to usable RFD, no reset needed\n"));
-                }
-                DBG(printf("RU Start: Cached current_rx_desc = 0x%08lx\n", (unsigned long)s->current_rx_desc));
-
-                s->rx_status = RX_READY;
-
-                /* Flush any pending packets from QEMU's internal queue */
-                qemu_flush_queued_packets(qemu_get_queue(s->nic));
-            } else {
-                /* No RFD with RBD available - stay in NO_RESOURCES */
-                DBG(printf("RU Start: No usable RFD found, staying in NO_RESOURCES\n"));
-                s->rx_status = RX_NO_RESOURCES;
-                s->scb_status |= SCB_STATUS_RNR;
-                DBG(printf("RU Start: No RFD with RBD available, staying in NO_RESOURCES\n"));
-            }
+            s->rx_status = RX_NO_RESOURCES;
+            s->scb_status |= SCB_STATUS_RNR;
+            DBG(printf("SCB: RU Start failed - no usable RFD\n"));
         }
         break;
+    }
+    
     case SCB_RUC_RESUME:
-        /* Resume Receive Unit */
         if (s->rx_status == RX_SUSPENDED) {
             s->rx_status = RX_READY;
             qemu_flush_queued_packets(qemu_get_queue(s->nic));
+            DBG(printf("SCB: RU Resume\n"));
         }
         break;
+        
     case SCB_RUC_SUSPEND:
         s->rx_status = RX_SUSPENDED;
         s->scb_status |= SCB_STATUS_RNR;
+        DBG(printf("SCB: RU Suspend\n"));
         break;
+        
     case SCB_RUC_ABORT:
         s->rx_status = RX_IDLE;
         s->scb_status |= SCB_STATUS_RNR;
+        DBG(printf("SCB: RU Abort\n"));
         break;
     }
 
+    /* Handle reset command */
     if (command & 0x80) {
+        DBG(printf("SCB: Reset command\n"));
         i82596_s_reset(s);
-    } else {
-        /* Execute commands only if CU is active */
-        if (s->cu_status == CU_ACTIVE) {
-            if (s->cmd_p == I596_NULL) {
-                s->cmd_p = get_uint32(s->scb + 4);
-            }
-            update_scb_status(s);
-            command_loop(s);
-        } else {
-            update_scb_status(s);
+        return;
+    }
+    /* Execute command loop if CU is active */
+    if (s->cu_status == CU_ACTIVE) {
+        if (s->cmd_p == I596_NULL) {
+            s->cmd_p = get_uint32(s->scb + 4);
         }
+        update_scb_status(s);
+        command_loop(s);
+    } else {
+        update_scb_status(s);
     }
 }
 
 static void signal_ca(I82596State *s)
 {
-    /* trace_i82596_channel_attention(s); */
-    s->iscp = 0;
     if (s->scp) {
-        /* CA after reset -> do init with new scp. */
-        s->sysbus = get_byte(s->scp + 3); /* big endian */
-        s->mode = (s->sysbus >> 1) & 0x03; /* m0 & m1 */
+        /* CA after reset -> initialize with new SCP */
+        s->sysbus = get_byte(s->scp + 3);
+        s->mode = (s->sysbus >> 1) & 0x03;  /* Extract mode bits (m0, m1) */
         s->iscp = get_uint32(s->scp + 8);
-
-        /* Get SCB address */
+        
         s->scb = get_uint32(s->iscp + 4);
-
-        if (!(s->mode == I82596_MODE_LINEAR)){
-            s->scb_base = get_uint32(s->iscp + 8);
-        } else {
-            s->scb_base = 0;
-        }
-
+        
+        s->scb_base = (s->mode == I82596_MODE_LINEAR) ? 0 : get_uint32(s->iscp + 8);
         s->scb = i82596_translate_address(s, s->scb, false);
-        DBG(printf("Translated SCB address: 0x%08x\n", s->scb));
+        DBG(printf("CA: Initialization - SCB=0x%08x, mode=%d, base=0x%08x\n",
+                   s->scb, s->mode, s->scb_base));
 
-        /* NOTE: Clear BUSY flag in ISCP, set CX and CNR to equal 1 in the SCB, clears the SCB command word,
-         * sends an interrupt to the CPU, and awaits another Channel Attention signal. */
+        /* Complete initialization sequence:
+         * - Clear BUSY flag in ISCP
+         * - Set CX and CNA in SCB status
+         * - Clear SCB command word
+         * - Signal interrupt
+         */
         set_byte(s->iscp + 1, 0);
         s->scb_status |= SCB_STATUS_CX | SCB_STATUS_CNA;
         update_scb_status(s);
@@ -2674,15 +2671,19 @@ static void signal_ca(I82596State *s)
         return;
     }
 
-    s->ca++;    /* count ca() */
-    if (!s->ca_active) {
-        s->ca_active = 1;
-        while (s->ca)   {
-            examine_scb(s);
-            s->ca--;
-        }
-        s->ca_active = 0;
+    if (s->ca_active) {
+        s->ca++;
+        return;
     }
+    s->ca_active = 1;
+    s->ca++;
+    
+    while (s->ca > 0) {
+        s->ca--;
+        examine_scb(s);
+    }
+    
+    s->ca_active = 0;
 
     if (s->send_irq) {
         s->send_irq = 0;
