@@ -1660,19 +1660,22 @@ rx_complete:
     /* === STEP 14: Advance RFA Pointer === */
     DBG(printf("RX: [STEP 14] Advancing RFA pointer\n"));
 
-    DBG(printf("RX: NOT advancing RFA pointer - driver will control it manually\n"));
-
     if (packet_completed && crc_valid) {
         hwaddr next_rfd_addr = i82596_translate_address(s, rfd.link, false);
         if (next_rfd_addr != 0 && next_rfd_addr != I596_NULL && next_rfd_addr != 0xFFFFFFFF) {
             struct i82596_rx_descriptor next_rfd;
             i82596_rx_desc_read(s, next_rfd_addr, &next_rfd);
 
-            hwaddr current_rbd = i82596_translate_address(s, rfd.rbd_addr, false);
-            if (current_rbd != 0 && current_rbd != I596_NULL && current_rbd != 0xFFFFFFFF) {
-                next_rfd.rbd_addr = rfd.rbd_addr;  /* Copy RBD pointer to next RFD */
-                DBG(printf("RX: Moved RBD pointer 0x%08x from current RFD to next RFD at 0x%08lx\n",
-                           rfd.rbd_addr, (unsigned long)next_rfd_addr));
+            hwaddr current_rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+            if (current_rbd_addr != 0 && current_rbd_addr != I596_NULL && current_rbd_addr != 0xFFFFFFFF) {
+                struct i82596_rx_buffer_desc current_rbd;
+                i82596_rbd_read(s, current_rbd_addr, &current_rbd);
+                
+                uint32_t next_rbd_link = current_rbd.link;
+                
+                next_rfd.rbd_addr = next_rbd_link;
+                DBG(printf("RX: Advanced RBD chain: current RBD=0x%08x, next RBD=0x%08x for next RFD at 0x%08lx\n",
+                           rfd.rbd_addr, next_rbd_link, (unsigned long)next_rfd_addr));
 
                 /* Write updated next RFD back to memory */
                 i82596_rx_desc_write(s, next_rfd_addr, &next_rfd, simplified_mode);
@@ -1681,10 +1684,16 @@ rx_complete:
                 rfd.rbd_addr = I596_NULL;
                 i82596_rx_desc_write(s, rfd_addr, &rfd, simplified_mode);
 
-                /* Update last_good_rfa to point to next RFD where RBD now is */
+                /* Update last_good_rfa to point to next RFD where next RBD now is */
                 s->last_good_rfa = next_rfd_addr;
-                DBG(printf("RX: Updated last_good_rfa to 0x%08x (next RFD with RBD)\n", s->last_good_rfa));
+                DBG(printf("RX: Updated last_good_rfa to 0x%08x (next RFD with next RBD)\n", s->last_good_rfa));
             }
+
+            set_uint32(s->scb + 8, next_rfd_addr);
+            DBG(printf("RX: *** ADVANCED SCB RFA pointer from 0x%08lx to 0x%08lx ***\n",
+                       (unsigned long)rfd_addr, (unsigned long)next_rfd_addr));
+        } else {
+            DBG(printf("RX: Reached end of RFD list (next=0x%08lx)\n", (unsigned long)next_rfd_addr));
         }
     }
 
@@ -2284,7 +2293,7 @@ static void i82596_configure(I82596State *s, uint32_t addr)
 
     if (s->rx_status == RX_READY) {
         timer_mod(s->flush_queue_timer,
-            qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 100);
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 100000000); /* 100ms in nanoseconds */
     }
 
     s->scb_status |= SCB_STATUS_CNA;
