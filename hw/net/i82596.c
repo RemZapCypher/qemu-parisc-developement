@@ -235,6 +235,7 @@ static void set_uint32(uint32_t addr, uint32_t val)
     set_uint16(addr + 2, val >> 16);
 }
 
+/* Centralized error detection and update mechanism */
 static void i82596_record_error(I82596State *s, uint16_t error_type, bool is_tx)
 {
     if (is_tx) {
@@ -242,43 +243,42 @@ static void i82596_record_error(I82596State *s, uint16_t error_type, bool is_tx)
         if (error_type & TX_ABORTED_ERRORS) {
             s->tx_aborted_errors++;
             set_uint32(s->scb + 28, s->tx_aborted_errors);
-            DBG(printf("TX Error: Excessive collisions (aborted), count=%d\n", 
+            DBG(printf("TX Error: Excessive collisions (aborted), count=%d\n",
                        s->tx_aborted_errors));
         }
-        
+
         if (error_type & TX_CARRIER_ERRORS) {
             DBG(printf("TX Error: Carrier sense lost\n"));
         }
-        
+
         if (error_type & TX_HEARTBEAT_ERRORS) {
             DBG(printf("TX Error: Heartbeat check failure\n"));
         }
     } else {
-        /* Handle RX-specific errors */
         if (error_type & RX_CRC_ERRORS) {
             s->crc_err++;
             set_uint32(s->scb + 16, s->crc_err);
             DBG(printf("RX Error: CRC error, count=%d\n", s->crc_err));
         }
-        
+
         if (error_type & (RX_LENGTH_ERRORS | RX_LENGTH_ERRORS_ALT | RX_FRAME_ERRORS)) {
             s->align_err++;
             set_uint32(s->scb + 18, s->align_err);
             DBG(printf("RX Error: Alignment/Length error, count=%d\n", s->align_err));
         }
-        
+
         if (error_type & RFD_STATUS_NOBUFS) {
             s->resource_err++;
             set_uint32(s->scb + 20, s->resource_err);
             DBG(printf("RX Error: No buffer resources, count=%d\n", s->resource_err));
         }
-        
+
         if (error_type & (RX_OVER_ERRORS | RX_FIFO_ERRORS)) {
             s->over_err++;
             set_uint32(s->scb + 22, s->over_err);
             DBG(printf("RX Error: Overrun/FIFO error, count=%d\n", s->over_err));
         }
-        
+
         if (error_type & RFD_STATUS_TRUNC) {
             s->short_fr_error++;
             set_uint32(s->scb + 26, s->short_fr_error);
@@ -286,12 +286,6 @@ static void i82596_record_error(I82596State *s, uint16_t error_type, bool is_tx)
         }
     }
 }
-
-
-
-
-
-
 
 /*Design the Rx functions
  * For the Rx functions
@@ -302,8 +296,6 @@ static void i82596_record_error(I82596State *s, uint16_t error_type, bool is_tx)
  *
  *
  */
-
-
 
 struct i82596_tx_descriptor {
     uint16_t status;          /* +0h: Status word (C, B, OK, A) + collision count */
@@ -1670,9 +1662,9 @@ rx_complete:
             if (current_rbd_addr != 0 && current_rbd_addr != I596_NULL && current_rbd_addr != 0xFFFFFFFF) {
                 struct i82596_rx_buffer_desc current_rbd;
                 i82596_rbd_read(s, current_rbd_addr, &current_rbd);
-                
+
                 uint32_t next_rbd_link = current_rbd.link;
-                
+
                 next_rfd.rbd_addr = next_rbd_link;
                 DBG(printf("RX: Advanced RBD chain: current RBD=0x%08x, next RBD=0x%08x for next RFD at 0x%08lx\n",
                            rfd.rbd_addr, next_rbd_link, (unsigned long)next_rfd_addr));
@@ -1972,7 +1964,7 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
 {
     if (is_tx) {
         /* TX Statistics Update */
-        
+
         /* Update collision counters */
         if (collision_count > 0) {
             s->tx_collisions += collision_count;
@@ -1999,7 +1991,7 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
 
     } else {
         /* RX Statistics Update */
-        
+
         s->total_frames++;
         set_uint32(s->scb + 40, s->total_frames);
 
@@ -2352,7 +2344,7 @@ static void update_scb_status(I82596State *s)
     s->scb_status = (s->scb_status & 0xf000)
         | (s->cu_status << 8) | (s->rx_status << 4) | (s->lnkst >> 8);
     set_uint16(s->scb, s->scb_status);
-    
+
     /* Update TX-related counters */
     set_uint32(s->scb + 28, s->tx_aborted_errors);
     set_uint32(s->scb + 32, s->tx_collisions);
@@ -2394,12 +2386,12 @@ static void command_loop(I82596State *s)
         /* Read command and link */
         uint16_t cmd = get_uint16(s->cmd_p + 2);
         uint32_t next_addr = get_uint32(s->cmd_p + 4);
-        
+
         DBG(printf("CMD_LOOP: Exec cmd=0x%04x type=%d at 0x%08x\n",
                    cmd, cmd & CMD_MASK, s->cmd_p));
 
         /* Translate next address */
-        next_addr = (next_addr == 0) ? I596_NULL : 
+        next_addr = (next_addr == 0) ? I596_NULL :
                     i82596_translate_address(s, next_addr, false);
 
         /* Execute command based on type */
@@ -2445,7 +2437,7 @@ skip_status_update:
         }
 
         bool stop = false;
-        
+
         if (cmd & CMD_SUSP) {
             s->cu_status = CU_SUSPENDED;
             s->scb_status |= SCB_STATUS_CNA;
@@ -2506,7 +2498,7 @@ static void examine_scb(I82596State *s)
     switch (cuc) {
     case SCB_CUC_NOP:
         break;
-        
+
     case SCB_CUC_START: {
         uint32_t cmd_ptr = get_uint32(s->scb + 4);
         s->cmd_p = i82596_translate_address(s, cmd_ptr, false);
@@ -2514,33 +2506,33 @@ static void examine_scb(I82596State *s)
         DBG(printf("SCB: CU Start at 0x%08x\n", s->cmd_p));
         break;
     }
-    
+
     case SCB_CUC_RESUME:
         if (s->cu_status == CU_SUSPENDED) {
             s->cu_status = CU_ACTIVE;
             DBG(printf("SCB: CU Resume\n"));
         }
         break;
-        
+
     case SCB_CUC_SUSPEND:
         s->cu_status = CU_SUSPENDED;
         s->scb_status |= SCB_STATUS_CNA;
         DBG(printf("SCB: CU Suspend\n"));
         break;
-        
+
     case SCB_CUC_ABORT:
         s->cu_status = CU_IDLE;
         s->scb_status |= SCB_STATUS_CNA;
         DBG(printf("SCB: CU Abort\n"));
         break;
-        
+
     case SCB_CUC_LOAD_THROTTLE: {
         bool external_trigger = (s->sysbus & I82586_MODE);
         i82596_load_throttle_timers(s, !external_trigger);
         DBG(printf("SCB: Load throttle timers (external=%d)\n", external_trigger));
         break;
     }
-    
+
     case SCB_CUC_LOAD_START:
         i82596_load_throttle_timers(s, true);
         DBG(printf("SCB: Load and start throttle timers\n"));
@@ -2551,13 +2543,13 @@ static void examine_scb(I82596State *s)
     switch (ruc) {
     case SCB_RUC_NOP:
         break;
-        
+
     case SCB_RUC_START: {
         uint32_t rfd_log = get_uint32(s->scb + 8);
         hwaddr rfd = i82596_translate_address(s, rfd_log, false);
-        
+
         DBG(printf("SCB: RU Start - RFA=0x%08x\n", rfd_log));
-        
+
         if (rfd == 0 || rfd == I596_NULL) {
             s->rx_status = RX_NO_RESOURCES;
             s->scb_status |= SCB_STATUS_RNR;
@@ -2586,7 +2578,7 @@ static void examine_scb(I82596State *s)
                     break;
                 }
             }
-            
+
             test_rfd_log = test_rfd.link;
             test_rfd_addr = i82596_translate_address(s, test_rfd.link, false);
         }
@@ -2610,7 +2602,7 @@ static void examine_scb(I82596State *s)
         }
         break;
     }
-    
+
     case SCB_RUC_RESUME:
         if (s->rx_status == RX_SUSPENDED) {
             s->rx_status = RX_READY;
@@ -2618,13 +2610,13 @@ static void examine_scb(I82596State *s)
             DBG(printf("SCB: RU Resume\n"));
         }
         break;
-        
+
     case SCB_RUC_SUSPEND:
         s->rx_status = RX_SUSPENDED;
         s->scb_status |= SCB_STATUS_RNR;
         DBG(printf("SCB: RU Suspend\n"));
         break;
-        
+
     case SCB_RUC_ABORT:
         s->rx_status = RX_IDLE;
         s->scb_status |= SCB_STATUS_RNR;
@@ -2657,9 +2649,9 @@ static void signal_ca(I82596State *s)
         s->sysbus = get_byte(s->scp + 3);
         s->mode = (s->sysbus >> 1) & 0x03;  /* Extract mode bits (m0, m1) */
         s->iscp = get_uint32(s->scp + 8);
-        
+
         s->scb = get_uint32(s->iscp + 4);
-        
+
         s->scb_base = (s->mode == I82596_MODE_LINEAR) ? 0 : get_uint32(s->iscp + 8);
         s->scb = i82596_translate_address(s, s->scb, false);
         DBG(printf("CA: Initialization - SCB=0x%08x, mode=%d, base=0x%08x\n",
@@ -2686,12 +2678,12 @@ static void signal_ca(I82596State *s)
     }
     s->ca_active = 1;
     s->ca++;
-    
+
     while (s->ca > 0) {
         s->ca--;
         examine_scb(s);
     }
-    
+
     s->ca_active = 0;
 
     if (s->send_irq) {
