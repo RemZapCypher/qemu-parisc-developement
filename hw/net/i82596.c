@@ -582,8 +582,6 @@ static void i82596_s_reset(I82596State *s)
                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                  s->t_on * NANOSECONDS_PER_MICROSECOND);
     }
-
-    qemu_set_irq(s->irq, 1); /* Here, we confirm to the driver done reset, HPUX needs this */
 }
 
 void i82596_h_reset(void *opaque)
@@ -1132,7 +1130,6 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     DBG(printf("\n=== RX: size=%zu rx_status=%d ===\n", size, s->rx_status));
     DBG(PRINT_PKTHDR("[RX]", buf));
 
-    /* Validate receive state */
     if (!I596_FULL_DUPLEX && !s->throttle_state) {
         DBG(printf("RX: Rejected (half-duplex, throttle off)\n"));
         return size;
@@ -1142,21 +1139,14 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         return -1;
     }
 
-    /* Packet filtering */
     bool passes_filter = i82596_check_packet_filter(s, buf, &is_broadcast);
 
-    /* Monitor mode */
-    if (!i82596_monitor(s, buf, size, passes_filter)) {
+    if (!i82596_monitor(s, buf, size, passes_filter) && (!passes_filter)) {
         DBG(printf("RX: Handled by monitor mode\n"));
         return size;
     }
 
-    if (!passes_filter) {
-        DBG(printf("RX: Rejected by filter\n"));
-        return size;
-    }
-
-    /* CRC verification (loopback mode only) */
+    /* CRC verification (loopback mode only ??? ) */
     if (I596_LOOPBACK && size > crc_size) {
         crc_valid = i82596_verify_crc(s, buf, size);
         if (!crc_valid) {
@@ -1174,7 +1164,6 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         frame_size = size;
     }
 
-    /* Get RFD from SCB RFA pointer */
     rfd_addr = get_uint32(s->scb + 8);
 
     if (rfd_addr == 0 || rfd_addr == I596_NULL) {
@@ -1428,7 +1417,6 @@ rx_complete:
         }
     }
 
-    /* Handle RFD command flags */
     if (rfd.command & CMD_SUSP) {
         DBG(printf("RX: Suspend bit set\n"));
         i82596_update_rx_state(s, RX_SUSPENDED);
@@ -1439,19 +1427,16 @@ rx_complete:
         i82596_update_rx_state(s, RX_NO_RESOURCES);
     }
 
-    /* Generate interrupt */
     if (packet_completed && crc_valid) {
         s->scb_status |= SCB_STATUS_FR;
         i82596_update_scb_irq(s, true);
     }
 
-    /* Update SCB statistics counters */
     set_uint32(s->scb + 16, s->crc_err);
     set_uint32(s->scb + 18, s->align_err);
     set_uint32(s->scb + 20, s->resource_err);
     set_uint32(s->scb + 22, s->over_err);
 
-    /* Proactive RFA fix */
     if (packet_completed && crc_valid && s->last_good_rfa != 0) {
         uint32_t current_rfa = get_uint32(s->scb + 8);
         if (current_rfa != s->last_good_rfa) {
@@ -1461,7 +1446,7 @@ rx_complete:
         }
     }
 
-    timer_mod(s->flush_queue_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 5000000);
+    // timer_mod(s->flush_queue_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 5000000);
 
     DBG(printf("=== RX: Complete (errors: CRC=%d align=%d res=%d) ===\n\n",
                s->crc_err, s->align_err, s->resource_err));
