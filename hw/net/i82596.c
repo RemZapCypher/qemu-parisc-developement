@@ -192,7 +192,6 @@ static int i82596_csma_backoff(I82596State *s, int retry_count);
 static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len);
 static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len);
 static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len);
-static void __attribute__((unused)) i82596_update_rx_statistics(I82596State *s, bool pkt_completed, bool crc_ok, size_t frame_size);
 static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_flags,
                                      uint16_t collision_count);
 
@@ -482,6 +481,19 @@ static void i82596_tx_tfd_read(I82596State *s, hwaddr addr,
     desc->length_field = get_uint16(addr + 20);
 }
 
+static void i82596_tx_tfd_write(I82596State *s, hwaddr addr,
+                                 struct i82596_tx_descriptor *desc)
+{
+    set_uint16(addr + 0, desc->status_bits);
+    set_uint16(addr + 2, desc->command);
+    set_uint32(addr + 4, desc->link_addr);
+    set_uint32(addr + 8, desc->tbd_addr);
+    set_uint16(addr + 12, desc->tcb_count);
+    address_space_write(&address_space_memory, addr + 14,
+                       MEMTXATTRS_UNSPECIFIED, desc->dest_addr, 6);
+    set_uint16(addr + 20, desc->length_field);
+}
+
 static void i82596_tbd_read(I82596State *s, hwaddr addr,
                             struct i82596_tx_buffer_desc *tbd)
 {
@@ -530,6 +542,27 @@ static void i82596_rx_rfd_read(I82596State *s, hwaddr addr,
     desc->length_field = get_uint16(addr + 0x1C);
 }
 
+static void i82596_rx_desc_write(I82596State *s, hwaddr addr,
+                                  struct i82596_rx_descriptor *desc,
+                                  bool write_full)
+{
+    set_uint16(addr + 0x0, desc->status_bits);
+    set_uint16(addr + 0xC, desc->actual_count);
+    
+    if (write_full) {
+        set_uint16(addr + 0x2, desc->command);
+        set_uint32(addr + 0x4, desc->link);
+        set_uint32(addr + 0x8, desc->rbd_addr);
+        set_uint16(addr + 0xE, desc->size);
+        
+        address_space_write(&address_space_memory, addr + 0x10,
+                          MEMTXATTRS_UNSPECIFIED, desc->dest_addr, 6);
+        address_space_write(&address_space_memory, addr + 0x16,
+                          MEMTXATTRS_UNSPECIFIED, desc->src_addr, 6);
+        set_uint16(addr + 0x1C, desc->length_field);
+    }
+}
+
 static void i82596_rbd_read(I82596State *s, hwaddr addr,
                             struct i82596_rx_buffer_desc *rbd)
 {
@@ -537,6 +570,15 @@ static void i82596_rbd_read(I82596State *s, hwaddr addr,
     rbd->next_rbd_addr = get_uint32(addr + 0x4);
     rbd->buffer_addr = get_uint32(addr + 0x8);
     rbd->size = get_uint16(addr + 0xC);
+}
+
+static void i82596_rbd_write(I82596State *s, hwaddr addr,
+                             struct i82596_rx_buffer_desc *rbd)
+{
+    set_uint16(addr + 0x0, rbd->actual_count);
+    set_uint32(addr + 0x4, rbd->next_rbd_addr);
+    set_uint32(addr + 0x8, rbd->buffer_addr);
+    set_uint16(addr + 0xC, rbd->size);
 }
 
 static void i82596_rx_rfd_dump(I82596State *s, hwaddr addr,
@@ -600,6 +642,7 @@ static int i82596_tx_copy_buffers(I82596State *s, hwaddr tfd_addr,
                 return -1;
             }
             i82596_tbd_read(s, tbd_addr, &tbd);
+            i82596_tbd_dump(s, tbd_addr, &tbd);
             buf_size = tbd.size & SIZE_MASK;
             buf_addr = i82596_translate_address(s, tbd.buffer, true);
 
@@ -676,7 +719,7 @@ static void i82596_tx_update_status(I82596State *s, hwaddr tfd_addr,
         desc->status_bits |= (collision_count & 0x0F);
     }
 
-    i82596_tx_desc_write(s, tfd_addr, desc);
+    i82596_tx_tfd_write(s, tfd_addr, desc);
 
     DBG(printf("TX: Updated TFD status=0x%04x tx_status=0x%04x collisions=%d\n",
                desc->status_bits, tx_status, collision_count));
@@ -728,8 +771,8 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
 
     DBG(printf("====== TX START: TFD @0x%08x ======\n", addr));
 
-    i82596_tx_desc_read(s, tfd_addr, &tfd);
-    i82596_dump_tx_descriptor(s, tfd_addr, &tfd);
+    i82596_tx_tfd_read(s, tfd_addr, &tfd);
+    i82596_tx_tfd_dump(s, tfd_addr, &tfd);
     s->current_tx_desc = tfd_addr;
     insert_crc = (I596_NOCRC_INS == 0) && ((tfd.command & 0x10) == 0) && !I596_LOOPBACK;
     collision_count = i82596_tx_csma_cd(s, &tx_status);
@@ -987,7 +1030,7 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
 
         uint16_t buf_size = rbd.size & 0x3FFF;
         hwaddr buf_addr = i82596_translate_address(s, rbd.buffer_addr, true);
-        i82596_dump_rbd(s, current_rbd, &rbd);
+        i82596_rbd_dump(s, current_rbd, &rbd);
         if (buf_addr == 0 || buf_addr == I596_NULL) {
             DBG(printf("RX: Invalid RBD buffer address\n"));
             *out_of_resources = true;
@@ -1005,7 +1048,7 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
         }
         rbd.actual_count = to_copy | 0x4000;  /* Set F (filled) bit */
         if (bytes_copied >= size) {
-            rbd.actual_count |= I596_EOF;  /* Set EOF bit */
+            rbd.actual_count |= 0x8000;  /* Set EOF bit (bit 15) */
             DBG(printf("RX: Marked RBD with EOF\n"));
         }
         i82596_rbd_write(s, current_rbd, &rbd);
@@ -1062,7 +1105,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     const uint8_t *packet_data = buf;
     bool crc_valid = true;
     bool out_of_resources = false;
-    size_t crc_size = i82596_get_crc_size();
+    size_t crc_size = i82596_get_crc_size(s);
 
     DBG(printf("\n=== RX: size=%zu rx_status=%d ===\n", size, s->rx_status));
     DBG(PRINT_PKTHDR("[RX]", buf));
@@ -1118,7 +1161,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     rfa_pointer = s->last_good_rfa;
 
     while (rfd_attempts < 64 && rfd_addr != 0 && rfd_addr != I596_NULL) {
-        i82596_rx_desc_read(s, rfd_addr, &rfd);
+        i82596_rx_rfd_read(s, rfd_addr, &rfd);
 
         if (rfd.status_bits & STAT_B) {
             rfa_pointer = rfd.link;
@@ -1149,7 +1192,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     /* fallback to last_good_rfa if search failed */
     if (!found_rfd_with_rbd && s->last_good_rfa != 0) {
         rfd_addr = s->last_good_rfa;
-        i82596_rx_desc_read(s, rfd_addr, &rfd);
+        i82596_rx_rfd_read(s, rfd_addr, &rfd);
         hwaddr check_rbd = i82596_translate_address(s, rfd.rbd_addr, false);
         if (check_rbd != 0 && check_rbd != I596_NULL && check_rbd != 0xFFFFFFFF) {
             found_rfd_with_rbd = true;
@@ -1173,7 +1216,8 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     DBG(printf("RX: RFD=0x%08lx (skipped=%d)\n", (unsigned long)rfd_addr, rfd_attempts));
 
     /* Re-read RFD structure */
-    i82596_rx_desc_read(s, rfd_addr, &rfd);
+    i82596_rx_rfd_read(s, rfd_addr, &rfd);
+    i82596_rx_rfd_dump(s, rfd_addr, &rfd);
 
     /* Determine mode and set busy */
     simplified_mode = !(rfd.command & CMD_FLEX);
@@ -1323,35 +1367,6 @@ rx_complete:
                rfd.status_bits, bytes_copied,
                (packet_completed && crc_valid) ? "OK" : "ERR"));
 
-    /* Advance RFA pointer */
-
-    if (packet_completed && crc_valid) {
-        hwaddr next_rfd_addr = i82596_translate_address(s, rfd.link, false);
-        if (next_rfd_addr != 0 && next_rfd_addr != I596_NULL && next_rfd_addr != 0xFFFFFFFF) {
-            struct i82596_rx_descriptor next_rfd;
-            i82596_rx_desc_read(s, next_rfd_addr, &next_rfd);
-
-            hwaddr current_rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
-            if (current_rbd_addr != 0 && current_rbd_addr != I596_NULL && current_rbd_addr != 0xFFFFFFFF) {
-                struct i82596_rx_buffer_desc current_rbd;
-                i82596_rbd_read(s, current_rbd_addr, &current_rbd);
-                uint32_t next_rbd_link = current_rbd.next_rbd_addr;
-
-                next_rfd.rbd_addr = next_rbd_link;
-                i82596_rx_desc_write(s, next_rfd_addr, &next_rfd, simplified_mode);
-
-                rfd.rbd_addr = I596_NULL;
-                i82596_rx_desc_write(s, rfd_addr, &rfd, simplified_mode);
-
-                s->last_good_rfa = next_rfd_addr;
-            }
-
-            set_uint32(s->scb + 8, next_rfd_addr);
-            DBG(printf("RX: Advanced RFA 0x%08lx->0x%08lx\n",
-                       (unsigned long)rfd_addr, (unsigned long)next_rfd_addr));
-        }
-    }
-
     if (rfd.command & CMD_SUSP) {
         DBG(printf("RX: Suspend bit set\n"));
         i82596_update_rx_state(s, RX_SUSPENDED);
@@ -1367,19 +1382,22 @@ rx_complete:
         i82596_update_scb_irq(s, true);
     }
 
+    /* Advance RFA pointer AFTER processing and interrupt - like temp.c */
+    if (packet_completed && crc_valid) {
+        hwaddr next_rfd_addr = i82596_translate_address(s, rfd.link, false);
+        if (next_rfd_addr != 0 && next_rfd_addr != I596_NULL && next_rfd_addr != 0xFFFFFFFF) {
+            /* Update SCB to point to next RFD */
+            set_uint32(s->scb + 8, next_rfd_addr);
+            s->last_good_rfa = next_rfd_addr;
+            DBG(printf("RX: Advanced RFA 0x%08lx->0x%08lx\n",
+                       (unsigned long)rfd_addr, (unsigned long)next_rfd_addr));
+        }
+    }
+
     set_uint32(s->scb + 16, s->crc_err);
     set_uint32(s->scb + 18, s->align_err);
     set_uint32(s->scb + 20, s->resource_err);
     set_uint32(s->scb + 22, s->over_err);
-
-    if (packet_completed && crc_valid && s->last_good_rfa != 0) {
-        uint32_t current_rfa = get_uint32(s->scb + 8);
-        if (current_rfa != s->last_good_rfa) {
-            set_uint32(s->scb + 8, s->last_good_rfa);
-            DBG(printf("RX: RFA proactive reset 0x%08x->0x%08x\n",
-                       current_rfa, s->last_good_rfa));
-        }
-    }
 
     DBG(printf("=== RX: Complete (errors: CRC=%d align=%d res=%d) ===\n\n",
                s->crc_err, s->align_err, s->resource_err));
@@ -1662,11 +1680,11 @@ static void i82596_load_throttle_timers(I82596State *s, bool start_now)
 static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
 {
     memset(buffer, 0, DUMP_BUF_SZ);
-    printf("This is the dump area function for i82596 QEMU side \n",
-            "If you are seeing this message, please contact:\n",
-            "Soumyajyotii Sarkar <soumyajyotisarkar23@gmail.com>\n",
-            "With the process in which you encountered this issue:\n",
-            "This still needs developement so, \n",
+    printf("This is the dump area function for i82596 QEMU side\n"
+            "If you are seeing this message, please contact:\n"
+            "Soumyajyotii Sarkar <soumyajyotisarkar23@gmail.com>\n"
+            "With the process in which you encountered this issue:\n"
+            "This still needs developement so,\n"
             "I will be more than delighted to help you out!\n"
         );
     
@@ -2104,7 +2122,7 @@ static void examine_scb(I82596State *s)
         bool found = false;
 
         for (int i = 0; i < 10 && test_rfd_addr != 0 && test_rfd_addr != I596_NULL; i++) {
-            i82596_rx_desc_read(s, test_rfd_addr, &test_rfd);
+            i82596_rx_rfd_read(s, test_rfd_addr, &test_rfd);
 
             if (test_rfd.command & CMD_FLEX) {
                 hwaddr rbd = i82596_translate_address(s, test_rfd.rbd_addr, false);
