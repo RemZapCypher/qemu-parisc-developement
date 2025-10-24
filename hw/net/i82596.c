@@ -1662,11 +1662,14 @@ static void i82596_load_throttle_timers(I82596State *s, bool start_now)
 static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
 {
     memset(buffer, 0, DUMP_BUF_SZ);
-    printf("This is the dump area function for i82596 QEMU side \n"
-            "If you are seeing this message, please contact:\n"
-            "Soumyajyotii Sarkar <soumyajyotisarkar23@gmail.com>\n"
-            "With the process in which you encountered this issue:\n"
-            "This still needs developement so, I will be more than delighted to help you out!\n");
+    printf("This is the dump area function for i82596 QEMU side \n",
+            "If you are seeing this message, please contact:\n",
+            "Soumyajyotii Sarkar <soumyajyotisarkar23@gmail.com>\n",
+            "With the process in which you encountered this issue:\n",
+            "This still needs developement so, \n",
+            "I will be more than delighted to help you out!\n"
+        );
+    
     auto void write_uint16(int offset, uint16_t value) {
         buffer[offset] = value >> 8;
         buffer[offset + 1] = value & 0xFF;
@@ -1846,25 +1849,19 @@ static void i82596_update_scb_irq(I82596State *s, bool trigger)
 
 static void i82596_update_cu_status(I82596State *s, uint16_t cmd_status, bool generate_interrupt)
 {
-    /* Update CU state based on command completion */
     if (cmd_status & STAT_C) {
-        /* Command completed */
         if (cmd_status & STAT_OK) {
-            /* Command completed successfully */
             if (s->cu_status == CU_ACTIVE) {
-                /* CU remains active if more commands in queue */
                 if (s->cmd_p == I596_NULL) {
                     s->cu_status = CU_IDLE;
                     s->scb_status |= SCB_STATUS_CNA;
                 }
             }
         } else {
-            /* Command failed or aborted */
             s->cu_status = CU_IDLE;
             s->scb_status |= SCB_STATUS_CNA;
         }
 
-        /* Generate completion interrupt if requested */
         if (generate_interrupt) {
             s->scb_status |= SCB_STATUS_CX;
             i82596_update_scb_irq(s, true);
