@@ -1110,6 +1110,11 @@ static void __attribute__((unused)) i82596_rx_update_rfd_status(I82596State *s, 
                rfd->status_bits, actual_count, eof));
 }
 
+static inline size_t i82596_get_crc_size(I82596State *s)
+{
+    return I596_CRC16_32 ? 4 : 2;
+}
+
 ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 {
     I82596State *s = qemu_get_nic_opaque(nc);
@@ -1125,7 +1130,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     const uint8_t *packet_data = buf;
     bool crc_valid = true;
     bool out_of_resources = false;
-    size_t crc_size = I596_CRC16_32 ? 4 : 2;
+    size_t crc_size = i82596_get_crc_size();
 
     DBG(printf("\n=== RX: size=%zu rx_status=%d ===\n", size, s->rx_status));
     DBG(PRINT_PKTHDR("[RX]", buf));
@@ -1283,11 +1288,9 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         i82596_rx_store_frame_header(s, &rfd, packet_data, frame_size);
 
     } else {
-        /* Flexible mode: frame in RFD optional data + RBD chain */
         uint16_t rfd_size = rfd.size & 0x3FFF;
         size_t rfd_frame_size = 0;
 
-        /* Copy to RFD optional data area if size > 0 */
         if (rfd_size > 0 && payload_size > 0) {
             size_t data_offset = 0x10;
             rfd_frame_size = MIN(payload_size, rfd_size);
@@ -1446,8 +1449,6 @@ rx_complete:
         }
     }
 
-    // timer_mod(s->flush_queue_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 5000000);
-
     DBG(printf("=== RX: Complete (errors: CRC=%d align=%d res=%d) ===\n\n",
                s->crc_err, s->align_err, s->resource_err));
 
@@ -1478,7 +1479,7 @@ ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovc
         memcpy(buf + offset, iov[i].iov_base, iov[i].iov_len);
         offset += iov[i].iov_len;
     }
-    PRINT_PKTHDR("Receive IOV:", buf);
+    DBG(PRINT_PKTHDR("Receive IOV:", buf));
     i82596_receive(nc, buf, sz);
     g_free(buf);
     return sz;
@@ -1539,13 +1540,11 @@ static bool i82596_check_medium_status(I82596State *s)
     }
 
     if (!s->throttle_state) {
-        DBG(printf("CSMA/CD: Medium busy (throttle off)\n"));
         return false;
     }
 
     if (!I596_LOOPBACK && (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) % 100 < 5)) {
         s->collision_events++;
-        DBG(printf("CSMA/CD: Simulated collision detected\n"));
         return false;
     }
 
@@ -1584,6 +1583,7 @@ static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len)
     return crc;
 }
 
+/* CRC FUNCTIONS */
 static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
 {
     if (len + 4 > PKT_BUF_SZ) {
@@ -1633,17 +1633,6 @@ static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len)
     }
 }
 
-static inline size_t i82596_get_crc_size(I82596State *s)
-{
-    return I596_CRC16_32 ? 4 : 2;
-}
-
-
-
-
-// TODO MAKE A UNIFIED FUNCTION FOR UPDATING THE STATISTICS
-/* Update TX status and counters in SCB */
-/* Update RX frame statistics */
 static void __attribute__((unused)) i82596_update_rx_statistics(I82596State *s, bool pkt_completed, bool crc_ok, size_t frame_size)
 {
     /* Update frame counters */
