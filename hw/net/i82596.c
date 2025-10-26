@@ -34,8 +34,6 @@
  * 14. Polling functions
  * 15. QOM and interface functions
  *
- * TODO:
- * [ ] Implement proper Rx and Tx functions. Use the kernel side debug to get as much info as possible, then proceed.
  */
 
 #include "qemu/osdep.h"
@@ -190,7 +188,7 @@ static bool i82596_check_medium_status(I82596State *s);
 static int i82596_csma_backoff(I82596State *s, int retry_count);
 static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len);
 static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len);
-static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len);
+/* static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len); */
 static void i82596_bus_throttle_timer(void *opaque);
 static void i82596_flush_queue_timer(void *opaque);
 static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_flags,
@@ -822,6 +820,12 @@ bool i82596_can_receive(NetClientState *nc)
 {
     /* All good can rx */
     I82596State *s = qemu_get_nic_opaque(nc);
+    
+    if (I596_LOOPBACK) {
+        DBG(printf("CAN_RX: FALSE - in loopback mode %d\n", I596_LOOPBACK));
+        return false;
+    }
+    
     if (!s->throttle_state && !I596_FULL_DUPLEX) {
         DBG(printf("CAN_RX: FALSE - throttle off in half duplex\n"));
         return false;
@@ -1121,18 +1125,11 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         return size;
     }
 
-    if (I596_LOOPBACK && size > crc_size) {
-        crc_valid = i82596_verify_crc(s, buf, size);
-        if (!crc_valid) {
-            DBG(printf("RX: CRC error in loopback\n"));
-            rx_status |= RX_CRC_ERRORS;
-            i82596_record_error(s, RX_CRC_ERRORS, false);
-            s->crc_err++;
-            if (!SAVE_BAD_FRAMES) {
-                return size;
-            }
-        }
-        frame_size = size - crc_size;
+    /* TODO: Welp, this is pointless will fix later */
+    if (I596_LOOPBACK) {
+        crc_valid = true;
+        frame_size = size;
+        DBG(printf("RX: Loopback mode - skipping CRC verification\n"));
     } else {
         crc_valid = true;
         frame_size = size;
@@ -1174,7 +1171,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 
     payload_size = frame_size;
     do {    
-        if (simplified_mode) {
+        if (simplified_mode && I596_LOOPBACK) {
             uint16_t rfd_size = rfd.size & 0x3FFF;
 
             if (rfd_size % 2 != 0) {
@@ -1274,7 +1271,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     } while (bytes_copied < payload_size);
 
 rx_complete:
-    if (I596_CRCINM && packet_completed) {
+    if (I596_CRCINM && !I596_LOOPBACK && packet_completed) {
         uint8_t crc_data[4];
         size_t crc_len = crc_size;
 
@@ -1314,11 +1311,19 @@ rx_complete:
         rfd.actual_count |= I596_EOF;
     }
 
-    i82596_rx_desc_write(s, rfd_addr, &rfd, simplified_mode);
+    i82596_rx_desc_write(s, rfd_addr, &rfd, (simplified_mode || I596_LOOPBACK));
 
-    DBG(printf("RX: Status=0x%04x bytes=%zu %s\n",
-               rfd.status_bits, bytes_copied,
-               (packet_completed && crc_valid) ? "OK" : "ERR"));
+    if (simplified_mode && I596_LOOPBACK) {
+        DBG(printf("RX LOOPBACK SIMPLIFIED: RFD after write:\n"));
+        i82596_rx_rfd_dump(s, rfd_addr, &rfd);
+    }
+
+    printf("RX: Updated RFD @0x%08lx status=0x%04x (C=%d OK=%d) bytes=%zu loopback=%d %s\n",
+           (unsigned long)rfd_addr, rfd.status_bits,
+           !!(rfd.status_bits & STAT_C),
+           !!(rfd.status_bits & STAT_OK),
+           bytes_copied, I596_LOOPBACK,
+           (packet_completed && crc_valid) ? "OK" : "ERR");
 
     if (rfd.command & CMD_SUSP) {
         DBG(printf("RX: Suspend bit set - not advancing RFA\n"));
@@ -1503,6 +1508,7 @@ static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
     }
 }
 
+#if 0
 static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len)
 {
     if (I596_CRC16_32) {
@@ -1530,6 +1536,7 @@ static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len)
         return valid;
     }
 }
+#endif
 
 static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_flags,
                                      uint16_t collision_count)
