@@ -1453,12 +1453,12 @@ static int i82596_csma_backoff(I82596State *s, int retry_count)
 {
     int backoff_factor, slot_count, backoff_time;
 
-    backoff_factor = MIN(retry_count, CSMA_BACKOFF_LIMIT);
+    backoff_factor = MIN(retry_count + 1, CSMA_BACKOFF_LIMIT);
     slot_count = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) % (1 << backoff_factor);
     backoff_time = slot_count * CSMA_SLOT_TIME;
 
-    DBG(printf("CSMA/CD: Backing off for %d microseconds (retry %d)\n",
-               backoff_time, retry_count));
+    DBG(printf("CSMA/CD: Backing off for %d microseconds (retry %d, factor %d, slots 0-%d)\n",
+               backoff_time, retry_count, backoff_factor, (1 << backoff_factor) - 1));
 
     return backoff_time;
 }
