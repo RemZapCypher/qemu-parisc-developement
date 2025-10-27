@@ -191,6 +191,7 @@ static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len);
 /* static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len); */
 static void i82596_bus_throttle_timer(void *opaque);
 static void i82596_flush_queue_timer(void *opaque);
+static void i82596_arp_reply_timer(void *opaque);
 static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_flags,
                                      uint16_t collision_count);
 
@@ -680,9 +681,57 @@ static int i82596_tx_process_frame(I82596State *s, bool insert_crc)
         return 0;
     }
 
-    if (I596_NO_SRC_ADD_IN == 0 && total_len >= ETH_ALEN * 2) {
-        memcpy(&s->tx_buffer[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
-        DBG(printf("TX: Inserted source MAC address\n"));
+    bool is_raw_ip = !I596_LOOPBACK && total_len >= 20 && (s->tx_buffer[0] & 0xF0) == 0x40;
+    bool is_raw_arp = !I596_LOOPBACK && total_len >= 28 && 
+                      s->tx_buffer[0] == 0x08 && s->tx_buffer[1] == 0x00 &&
+                      s->tx_buffer[2] == 0x06 && s->tx_buffer[3] == 0x04;
+    
+    if (is_raw_ip || is_raw_arp) {
+        if (is_raw_ip) {
+            DBG(printf("TX: Detected raw IP packet (length %d), wrapping in Ethernet frame\n", total_len));
+        } else {
+            DBG(printf("TX: Detected raw ARP packet (length %d), wrapping in Ethernet frame\n", total_len));
+        }
+        
+        uint8_t raw_packet[PKT_BUF_SZ];
+        memcpy(raw_packet, s->tx_buffer, total_len);
+        int raw_len = total_len;
+        total_len = 0;
+        if (is_raw_arp) {
+            /* ARP: broadcast */
+            s->tx_buffer[total_len++] = 0xff;
+            s->tx_buffer[total_len++] = 0xff;
+            s->tx_buffer[total_len++] = 0xff;
+            s->tx_buffer[total_len++] = 0xff;
+            s->tx_buffer[total_len++] = 0xff;
+            s->tx_buffer[total_len++] = 0xff;
+        } else {
+            /* IP: gateway MAC (52:55:0a:00:02:02) */
+            s->tx_buffer[total_len++] = 0x52;
+            s->tx_buffer[total_len++] = 0x55;
+            s->tx_buffer[total_len++] = 0x0a;
+            s->tx_buffer[total_len++] = 0x00;
+            s->tx_buffer[total_len++] = 0x02;
+            s->tx_buffer[total_len++] = 0x02;
+        }
+        memcpy(&s->tx_buffer[total_len], s->conf.macaddr.a, ETH_ALEN);
+        total_len += ETH_ALEN;
+        if (is_raw_arp) {
+            s->tx_buffer[total_len++] = 0x08;
+            s->tx_buffer[total_len++] = 0x06;
+        } else {
+            s->tx_buffer[total_len++] = 0x08;
+            s->tx_buffer[total_len++] = 0x00;
+        }
+        memcpy(&s->tx_buffer[total_len], raw_packet, raw_len);
+        total_len += raw_len;
+        
+        DBG(printf("TX: Wrapped packet in Ethernet frame, new length %d\n", total_len));
+    } else {
+        if (I596_NO_SRC_ADD_IN == 0 && total_len >= ETH_ALEN * 2) {
+            memcpy(&s->tx_buffer[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
+            DBG(printf("TX: Inserted source MAC address\n"));
+        }
     }
 
     if (I596_PADDING && total_len < I596_MIN_FRAME_LEN) {
@@ -720,8 +769,12 @@ static void i82596_tx_update_status(I82596State *s, hwaddr tfd_addr,
 
     i82596_tx_tfd_write(s, tfd_addr, desc);
 
-    DBG(printf("TX: Updated TFD status=0x%04x tx_status=0x%04x collisions=%d\n",
-               desc->status_bits, tx_status, collision_count));
+    printf("TX: Updated TFD @0x%08lx status=0x%04x (C=%d OK=%d A=%d) collisions=%d loopback=%d\n",
+           (unsigned long)tfd_addr, desc->status_bits,
+           !!(desc->status_bits & STAT_C),
+           !!(desc->status_bits & STAT_OK),
+           !!(desc->status_bits & STAT_A),
+           collision_count, I596_LOOPBACK);
 }
 
 static int i82596_tx_csma_cd(I82596State *s, uint16_t *tx_status)
@@ -797,12 +850,106 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
     s->last_tx_len = frame_len;
     DBG(PRINT_PKTHDR("TX Send", s->tx_buffer));
     DBG(printf("TX: Transmitting %d bytes\n", frame_len));
+    if (frame_len >= 42) {
+        DBG(printf("TX: Packet bytes [0-13]: %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x | %02x %02x\n",
+                   s->tx_buffer[0], s->tx_buffer[1], s->tx_buffer[2], s->tx_buffer[3], s->tx_buffer[4], s->tx_buffer[5],
+                   s->tx_buffer[6], s->tx_buffer[7], s->tx_buffer[8], s->tx_buffer[9], s->tx_buffer[10], s->tx_buffer[11],
+                   s->tx_buffer[12], s->tx_buffer[13]));
+        DBG(printf("TX: Packet bytes [14-27]: %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x | %02x %02x\n",
+                   s->tx_buffer[14], s->tx_buffer[15], s->tx_buffer[16], s->tx_buffer[17], s->tx_buffer[18], s->tx_buffer[19],
+                   s->tx_buffer[20], s->tx_buffer[21], s->tx_buffer[22], s->tx_buffer[23], s->tx_buffer[24], s->tx_buffer[25],
+                   s->tx_buffer[26], s->tx_buffer[27]));
+        DBG(printf("TX: Packet bytes [28-41]: %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x\n",
+                   s->tx_buffer[28], s->tx_buffer[29], s->tx_buffer[30], s->tx_buffer[31],
+                   s->tx_buffer[32], s->tx_buffer[33], s->tx_buffer[34], s->tx_buffer[35], s->tx_buffer[36], s->tx_buffer[37],
+                   s->tx_buffer[38], s->tx_buffer[39], s->tx_buffer[40], s->tx_buffer[41]));
+    }
+    
     /* We check if loopback is their otherwise if zero normal tx */
     if (I596_LOOPBACK) {
         i82596_receive(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
     } else {
         if (s->nic) {
             qemu_send_packet_raw(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
+            
+             /* The packet is now wrapped in Ethernet frame, so ARP starts at offset 14.
+             * Ethernet header (14 bytes):
+             *   Bytes 0-5: Dest MAC (broadcast ff:ff:ff:ff:ff:ff)
+             *   Bytes 6-11: Source MAC
+             *   Bytes 12-13: EtherType 0x0806 (ARP)
+             * ARP packet (starts at byte 14):
+             *   Bytes 14-15: Hardware type (08 00 in HP-UX byte order)
+             *   Bytes 16-17: Sizes (06 04)
+             *   Bytes 18-19: Opcode (00 01 = request)
+             *   Bytes 20-25: Sender MAC
+             *   Bytes 26-29: Sender IP
+             *   Bytes 30-35: Target MAC (zeros)
+             *   Bytes 36-39: Target IP (10.0.2.2)
+             */
+            if (frame_len >= 60 && 
+                s->tx_buffer[12] == 0x08 && s->tx_buffer[13] == 0x06 &&  /* EtherType: ARP */
+                s->tx_buffer[14] == 0x08 && s->tx_buffer[15] == 0x00 &&  /* HW type */
+                s->tx_buffer[16] == 0x06 && s->tx_buffer[17] == 0x04 &&  /* HW/Proto len */
+                s->tx_buffer[18] == 0x00 && s->tx_buffer[19] == 0x01 &&  /* Op: request */
+                s->tx_buffer[36] == 10 && s->tx_buffer[37] == 0 &&       /* Target IP */
+                s->tx_buffer[38] == 2 && s->tx_buffer[39] == 2) {        /* 10.0.2.2 */
+                
+                DBG(printf("TX: ARP request for slirp gateway 10.0.2.2 detected (HP-UX raw format)\n"));
+                DBG(printf("TX: HP-UX Request details:\n"));
+                DBG(printf("  [14-19] HW/Proto/Lens/Op: %02x %02x %02x %02x %02x %02x\n",
+                          s->tx_buffer[14], s->tx_buffer[15], s->tx_buffer[16],
+                          s->tx_buffer[17], s->tx_buffer[18], s->tx_buffer[19]));
+                DBG(printf("  [20-25] Sender MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                          s->tx_buffer[20], s->tx_buffer[21], s->tx_buffer[22],
+                          s->tx_buffer[23], s->tx_buffer[24], s->tx_buffer[25]));
+                DBG(printf("  [26-29] Sender IP: %d.%d.%d.%d\n",
+                          s->tx_buffer[26], s->tx_buffer[27], s->tx_buffer[28], s->tx_buffer[29]));
+                DBG(printf("  [30-35] Target MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                          s->tx_buffer[30], s->tx_buffer[31], s->tx_buffer[32],
+                          s->tx_buffer[33], s->tx_buffer[34], s->tx_buffer[35]));
+                DBG(printf("  [36-39] Target IP: %d.%d.%d.%d\n",
+                          s->tx_buffer[36], s->tx_buffer[37], s->tx_buffer[38], s->tx_buffer[39]));
+                uint8_t arp_reply[58];  
+                memcpy(arp_reply, s->tx_buffer + 6, 6);
+                arp_reply[6] = 0x52; arp_reply[7] = 0x55;
+                arp_reply[8] = 0x0a; arp_reply[9] = 0x00;
+                arp_reply[10] = 0x02; arp_reply[11] = 0x02;
+                arp_reply[12] = 0x08; arp_reply[13] = 0x06;
+                arp_reply[14] = 0x00; arp_reply[15] = 0x01;
+                arp_reply[16] = 0x08; arp_reply[17] = 0x00;
+                arp_reply[18] = 0x06; arp_reply[19] = 0x04;
+                arp_reply[20] = 0x00; arp_reply[21] = 0x02;
+                arp_reply[22] = 0x52;  arp_reply[23] = 0x55;
+                arp_reply[24] = 0x0a;  arp_reply[25] = 0x00;
+                arp_reply[26] = 0x02; arp_reply[27] = 0x02;
+                arp_reply[28] = 0x0a; arp_reply[29] = 0x00;
+                arp_reply[30] = 0x02; arp_reply[31] = 0x02;
+                memcpy(arp_reply + 32, s->tx_buffer + 20, 6);
+                memcpy(arp_reply + 38, s->tx_buffer + 26, 4);
+                size_t arp_reply_size = 42;
+                DBG(printf("TX: Built STANDARD ARP reply (not HP-UX format)\n"));
+                DBG(printf("TX: Reply ARP [14-21]: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                          arp_reply[14], arp_reply[15], arp_reply[16], arp_reply[17],
+                          arp_reply[18], arp_reply[19], arp_reply[20], arp_reply[21]));
+                DBG(printf("TX: Reply Sender MAC [22-27]: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                          arp_reply[22], arp_reply[23], arp_reply[24],
+                          arp_reply[25], arp_reply[26], arp_reply[27]));
+                DBG(printf("TX: Reply Sender IP [28-31]: %d.%d.%d.%d\n",
+                          arp_reply[28], arp_reply[29], arp_reply[30], arp_reply[31]));
+                DBG(printf("TX: Reply Target MAC [32-37]: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                          arp_reply[32], arp_reply[33], arp_reply[34],
+                          arp_reply[35], arp_reply[36], arp_reply[37]));
+                DBG(printf("TX: Reply Target IP [38-41]: %d.%d.%d.%d\n",
+                          arp_reply[38], arp_reply[39], arp_reply[40], arp_reply[41]));
+                memcpy(s->arp_reply_buf, arp_reply, arp_reply_size);
+                s->arp_reply_len = arp_reply_size;
+                s->arp_reply_pending = true;
+                
+                DBG(printf("TX: Scheduling DELAYED ARP reply injection (1ms delay), size=%zu\n", arp_reply_size));
+                DBG(printf("TX: Reply will be unwrapped in RX path for HP-UX\n"));
+                
+                timer_mod(s->arp_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000); /* 1ms */
+            }
         }
     }
 
@@ -1058,6 +1205,17 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
             bytes_copied += to_copy;
             DBG(printf("RX: Copied %zu bytes to RBD buffer @ 0x%08lx\n",
                        to_copy, (unsigned long)buf_addr));
+            if (to_copy <= 64) {
+                DBG(printf("RX: RBD buffer contents [0-%zu]:\n", to_copy - 1));
+                for (size_t i = 0; i < to_copy; i += 16) {
+                    size_t line_len = (to_copy - i) < 16 ? (to_copy - i) : 16;
+                    DBG(printf("  [%02zx]: ", i));
+                    for (size_t j = 0; j < line_len; j++) {
+                        DBG(printf("%02x ", buf[bytes_copied - to_copy + i + j]));
+                    }
+                    DBG(printf("\n"));
+                }
+            }
         }
         rbd.actual_count = to_copy | 0x4000;  /* Set F (filled) bit */
         if (bytes_copied >= size) {
@@ -1065,6 +1223,19 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
             DBG(printf("RX: Marked RBD with EOF\n"));
         }
         i82596_rbd_write(s, current_rbd, &rbd);
+        DBG(printf("RX: Updated RBD @0x%08lx: actual_count=0x%04x (EOF=%d F=%d count=%d)\n",
+                   (unsigned long)current_rbd, rbd.actual_count,
+                   !!(rbd.actual_count & 0x8000), !!(rbd.actual_count & 0x4000),
+                   rbd.actual_count & 0x3FFF));
+        uint8_t rbd_mem[16];
+        address_space_read(&address_space_memory, current_rbd, MEMTXATTRS_UNSPECIFIED, rbd_mem, 16);
+        DBG(printf("RX: RBD descriptor memory @0x%08lx:\n", (unsigned long)current_rbd));
+        DBG(printf("  actual_count=0x%02x%02x next=0x%02x%02x%02x%02x buffer=0x%02x%02x%02x%02x size=0x%02x%02x pad=0x%02x%02x%02x%02x\n",
+                  rbd_mem[0], rbd_mem[1],                       /* actual_count at 0x0 */
+                  rbd_mem[4], rbd_mem[5], rbd_mem[6], rbd_mem[7],  /* next at 0x4 */
+                  rbd_mem[8], rbd_mem[9], rbd_mem[10], rbd_mem[11], /* buffer at 0x8 */
+                  rbd_mem[12], rbd_mem[13],                     /* size at 0xC */
+                  rbd_mem[2], rbd_mem[3], rbd_mem[14], rbd_mem[15])); /* padding/unused */
         if (rbd.size & CMD_EOL) {  /* EL bit */
             DBG(printf("RX: Reached end of RBD list\n"));
             if (bytes_copied < size) {
@@ -1104,6 +1275,11 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     bool crc_valid = true;
     bool out_of_resources = false;
     size_t crc_size = i82596_get_crc_size(s);
+    bool unwrapped_packet = false;
+    const uint8_t *original_buf = buf;
+
+    printf("\n*** i82596_receive() CALLED: size=%zu rx_status=%d loopback=%d ***\n", 
+           size, s->rx_status, I596_LOOPBACK);
 
     DBG(printf("\n=== RX: size=%zu rx_status=%d ===\n", size, s->rx_status));
     DBG(PRINT_PKTHDR("[RX]", buf));
@@ -1133,6 +1309,31 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     } else {
         crc_valid = true;
         frame_size = size;
+        DBG(printf("RX: External packet - no CRC present (stripped by host NIC)\n"));
+        
+        if (frame_size >= 14 && !I596_LOOPBACK) {
+            uint16_t ethertype = (buf[12] << 8) | buf[13];
+            if (ethertype == 0x0800 || ethertype == 0x0806 || ethertype == 0x86DD) {
+                DBG(printf("RX: Detected Ethernet frame (EtherType=0x%04x), unwrapping for HP-UX\n", ethertype));
+                DBG(printf("RX: Original size=%zu, stripping 14-byte Ethernet header\n", frame_size));
+                packet_data = buf + 14;
+                frame_size = size - 14;
+                unwrapped_packet = true;
+                
+                DBG(printf("RX: Unwrapped packet size=%zu (raw %s)\n", 
+                           frame_size, ethertype == 0x0806 ? "ARP" : "IP"));
+                
+                if (ethertype == 0x0806 && frame_size >= 26) {
+                    DBG(printf("RX: Unwrapped ARP [0-13]: %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x | %02x %02x\n",
+                               packet_data[0], packet_data[1], packet_data[2], packet_data[3], packet_data[4], packet_data[5],
+                               packet_data[6], packet_data[7], packet_data[8], packet_data[9], packet_data[10], packet_data[11],
+                               packet_data[12], packet_data[13]));
+                    DBG(printf("RX: Unwrapped ARP [14-25]: %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x\n",
+                               packet_data[14], packet_data[15], packet_data[16], packet_data[17], packet_data[18], packet_data[19],
+                               packet_data[20], packet_data[21], packet_data[22], packet_data[23], packet_data[24], packet_data[25]));
+                }
+            }
+        }
     }
 
     rfd_addr = get_uint32(s->scb + 8);
@@ -1157,8 +1358,9 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 
     set_uint16(rfd_addr, STAT_B);
 
-    DBG(printf("RX: Mode=%s cmd=0x%04x\n",
-               simplified_mode ? "SIMPLIFIED" : "FLEXIBLE", rfd.command));
+    DBG(printf("RX: Mode=%s cmd=0x%04x CRCINM=%d CRC16_32=%d\n",
+               simplified_mode ? "SIMPLIFIED" : "FLEXIBLE", rfd.command,
+               I596_CRCINM ? 1 : 0, I596_CRC16_32 ? 1 : 0));
 
     if (frame_size < 14) {
         DBG(printf("RX: Frame too short (%zu bytes)\n", frame_size));
@@ -1197,22 +1399,38 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
             i82596_rx_store_frame_header(s, &rfd, packet_data, frame_size);
 
         } else {
-            uint16_t rfd_size = rfd.size & 0x3FFF; /* SIZE_MASK */
-            size_t rfd_frame_size = 0;
-            size_t remaining_to_copy = payload_size - bytes_copied;
-            if (rfd_size > 0 && remaining_to_copy > 0) {
-                size_t data_offset = 0x10;
-                rfd_frame_size = MIN(remaining_to_copy, rfd_size);
-                address_space_write(&address_space_memory, rfd_addr + data_offset,
-                                  MEMTXATTRS_UNSPECIFIED, packet_data + bytes_copied, rfd_frame_size);
-                bytes_copied += rfd_frame_size;
-                DBG(printf("RX: Copied %zu bytes to RFD data area, total=%zu/%zu\n",
-                           rfd_frame_size, bytes_copied, payload_size));
+            if (unwrapped_packet) {
+                memcpy(rfd.dest_addr, original_buf, 6);
+                memcpy(rfd.src_addr, original_buf + 6, 6);
+                rfd.length_field = frame_size;
+                DBG(printf("RX: Populated RFD header for unwrapped packet: "
+                          "dest=" MAC_FMT " src=" MAC_FMT " len=%zu (IEEE 802.3 raw)\n",
+                          MAC_ARG(rfd.dest_addr), MAC_ARG(rfd.src_addr), frame_size));
+            }
+            
+            rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+            bool has_rbd_chain = (rbd_addr != I596_NULL && rbd_addr != 0 && rbd_addr != 0xFFFFFFFF);
+            
+            if (!has_rbd_chain) {
+                uint16_t rfd_size = rfd.size & 0x3FFF; /* SIZE_MASK */
+                size_t rfd_frame_size = 0;
+                size_t remaining_to_copy = payload_size - bytes_copied;
+                if (rfd_size > 0 && remaining_to_copy > 0) {
+                    size_t data_offset = 0x1e;
+                    rfd_frame_size = MIN(remaining_to_copy, rfd_size);
+                    address_space_write(&address_space_memory, rfd_addr + data_offset,
+                                      MEMTXATTRS_UNSPECIFIED, packet_data + bytes_copied, rfd_frame_size);
+                    bytes_copied += rfd_frame_size;
+                    DBG(printf("RX: Copied %zu bytes to RFD data area at offset 0x%zx, total=%zu/%zu\n",
+                               rfd_frame_size, data_offset, bytes_copied, payload_size));
+                }
             }
 
-            if (bytes_copied < payload_size) {
+            if (has_rbd_chain || bytes_copied < payload_size) {
                 size_t remaining = payload_size - bytes_copied;
-                rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+                if (!has_rbd_chain) {
+                    rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+                }
 
                 if (rbd_addr == I596_NULL || rbd_addr == 0 || rbd_addr == 0xFFFFFFFF) {
                     DBG(printf("RX: No RBD available in flexible mode - accepting partial frame in RFD\n"));
@@ -1272,22 +1490,36 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 
 rx_complete:
     if (I596_CRCINM && !I596_LOOPBACK && packet_completed) {
-        uint8_t crc_data[4];
-        size_t crc_len = crc_size;
+        rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+        bool used_rbds = (rbd_addr != I596_NULL && rbd_addr != 0 && rbd_addr != 0xFFFFFFFF);
+        
+        if (!used_rbds) {
+            uint8_t crc_data[4];
+            size_t crc_len = crc_size;
 
-        if (I596_CRC16_32) {
-            uint32_t crc = crc32(~0, packet_data, frame_size);
-            crc = cpu_to_be32(crc);
-            memcpy(crc_data, &crc, 4);
+            if (I596_CRC16_32) {
+                uint32_t crc = crc32(~0, packet_data, frame_size);
+                crc = cpu_to_be32(crc);
+                memcpy(crc_data, &crc, 4);
+            } else {
+                uint16_t crc = i82596_calculate_crc16(packet_data, frame_size);
+                crc = cpu_to_be16(crc);
+                memcpy(crc_data, &crc, 2);
+            }
+
+            if (simplified_mode) {
+                address_space_write(&address_space_memory, rfd_addr + 0x1E + bytes_copied,
+                                   MEMTXATTRS_UNSPECIFIED, crc_data, crc_len);
+            } else {
+                address_space_write(&address_space_memory, rfd_addr + 0x1e + bytes_copied,
+                                   MEMTXATTRS_UNSPECIFIED, crc_data, crc_len);
+                DBG(printf("RX: Appended %zu-byte CRC to flexible mode RFD at offset 0x%zx\n",
+                          crc_len, (size_t)(0x1e + bytes_copied)));
+            }
+            bytes_copied += crc_len;
+            DBG(printf("RX: Total bytes including CRC: %zu\n", bytes_copied));
         } else {
-            uint16_t crc = i82596_calculate_crc16(packet_data, frame_size);
-            crc = cpu_to_be16(crc);
-            memcpy(crc_data, &crc, 2);
-        }
-
-        if (simplified_mode) {
-            address_space_write(&address_space_memory, rfd_addr + 0x1E + bytes_copied,
-                               MEMTXATTRS_UNSPECIFIED, crc_data, crc_len);
+            DBG(printf("RX: Data in RBDs - CRC handling by HP-UX, not appending to RFD\n"));
         }
     }
 
@@ -1306,12 +1538,39 @@ rx_complete:
     }
 
     rfd.status_bits = rx_status & ~STAT_B;
-    rfd.actual_count = (bytes_copied & 0x3FFF) | 0x4000;
+    rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+    bool data_in_rfd = (rbd_addr == I596_NULL || rbd_addr == 0 || rbd_addr == 0xFFFFFFFF);
+    
+    if (data_in_rfd) {
+        rfd.actual_count = (bytes_copied & 0x3FFF) | 0x4000;  /* F bit set: data in RFD */
+        DBG(printf("RX: F bit set - data stored in RFD\n"));
+    } else {
+        rfd.actual_count = (bytes_copied & 0x3FFF);  /* F bit clear: data in RBDs */
+        DBG(printf("RX: F bit clear - data stored in RBDs\n"));
+    }
+    
     if (packet_completed) {
         rfd.actual_count |= I596_EOF;
     }
+    i82596_rx_desc_write(s, rfd_addr, &rfd, (simplified_mode || I596_LOOPBACK || unwrapped_packet));
 
-    i82596_rx_desc_write(s, rfd_addr, &rfd, (simplified_mode || I596_LOOPBACK));
+    if (unwrapped_packet) {
+        struct i82596_rx_descriptor verify_rfd;
+        i82596_rx_rfd_read(s, rfd_addr, &verify_rfd);
+        DBG(printf("RX: Verified RFD after write: dest=" MAC_FMT " src=" MAC_FMT " len=0x%04x\n",
+                   MAC_ARG(verify_rfd.dest_addr), MAC_ARG(verify_rfd.src_addr), verify_rfd.length_field));
+        uint8_t mem_dump[64];
+        address_space_read(&address_space_memory, rfd_addr, MEMTXATTRS_UNSPECIFIED, mem_dump, 64);
+        DBG(printf("RX: Memory dump of RFD @0x%08x:\n", (unsigned int)rfd_addr));
+        for (int i = 0; i < 64; i += 16) {
+            DBG(printf("  [0x%02x]: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                      i,
+                      mem_dump[i+0], mem_dump[i+1], mem_dump[i+2], mem_dump[i+3],
+                      mem_dump[i+4], mem_dump[i+5], mem_dump[i+6], mem_dump[i+7],
+                      mem_dump[i+8], mem_dump[i+9], mem_dump[i+10], mem_dump[i+11],
+                      mem_dump[i+12], mem_dump[i+13], mem_dump[i+14], mem_dump[i+15]));
+        }
+    }
 
     if (simplified_mode && I596_LOOPBACK) {
         DBG(printf("RX LOOPBACK SIMPLIFIED: RFD after write:\n"));
@@ -1350,6 +1609,10 @@ rx_complete:
         }
 
         s->scb_status |= SCB_STATUS_FR;
+        DBG(printf("RX: Setting FR interrupt - Status now 0x%04x (CX=%d FR=%d CNA=%d RNR=%d)\n",
+                   s->scb_status,
+                   !!(s->scb_status & 0x8000), !!(s->scb_status & 0x4000),
+                   !!(s->scb_status & 0x2000), !!(s->scb_status & 0x1000)));
         i82596_update_scb_irq(s, true);
         DBG(printf("RX: RFD completed successfully\n"));
     }
@@ -1769,6 +2032,7 @@ static void i82596_command_dump(I82596State *s, uint32_t cmd_addr)
 static void i82596_configure(I82596State *s, uint32_t addr)
 {
     uint8_t byte_cnt;
+    uint8_t old_loopback = I596_LOOPBACK;
     byte_cnt = get_byte(addr + 8) & 0x0f;
     byte_cnt = MAX(byte_cnt, 4);
     byte_cnt = MIN(byte_cnt, sizeof(s->config));
@@ -1778,6 +2042,16 @@ static void i82596_configure(I82596State *s, uint32_t addr)
 
     address_space_read(&address_space_memory, addr + 8,
                        MEMTXATTRS_UNSPECIFIED, s->config, byte_cnt);
+
+    printf("CONFIG: byte_cnt=%d config[3]=0x%02x loopback_mode=%d\n", 
+           byte_cnt, s->config[3], I596_LOOPBACK);
+
+    if (old_loopback != 0 && I596_LOOPBACK == 0) {
+        DBG(printf("CONFIG: Exited loopback mode, flushing queued packets\n"));
+        if (s->nic) {
+            qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        }
+    }
 
     if (byte_cnt > 12) {
         bool previous_duplex = I596_FULL_DUPLEX;
@@ -1945,6 +2219,7 @@ skip_status_update:
         if (cmd & CMD_INTR) {
             s->scb_status |= SCB_STATUS_CX;
             s->send_irq = 1;
+            DBG(printf("CMD_LOOP: Setting CX interrupt - Status now 0x%04x\n", s->scb_status));
         }
 
         bool stop = false;
@@ -1953,7 +2228,7 @@ skip_status_update:
             s->cu_status = CU_SUSPENDED;
             s->scb_status |= SCB_STATUS_CNA;
             stop = true;
-            DBG(printf("CMD_LOOP: Suspend\n"));
+            DBG(printf("CMD_LOOP: Suspend - Setting CNA - Status now 0x%04x\n", s->scb_status));
         }
 
         if (cmd & CMD_EOL) {
@@ -1961,7 +2236,7 @@ skip_status_update:
             s->cu_status = CU_IDLE;
             s->scb_status |= SCB_STATUS_CNA;
             stop = true;
-            DBG(printf("CMD_LOOP: End of list\n"));
+            DBG(printf("CMD_LOOP: End of list - Setting CNA - Status now 0x%04x\n", s->scb_status));
         } else if (!stop) {
             /* Advance to next command */
             if (next_addr == 0 || next_addr == I596_NULL || next_addr == s->cmd_p) {
@@ -1998,12 +2273,28 @@ static void examine_scb(I82596State *s)
     uint16_t command = get_uint16(s->scb + 2);
     uint8_t cuc = (command >> 8) & 0x7;
     uint8_t ruc = (command >> 4) & 0x7;
+    uint16_t old_status = s->scb_status;
+    uint16_t ack_bits = command & SCB_ACK_MASK;
 
     DBG(printf("SCB: command=0x%04x CUC=%d RUC=%d\n", command, cuc, ruc));
+    
+    if (ack_bits) {
+        DBG(printf("SCB: ACK 0x%04x - Status before=0x%04x (CX=%d FR=%d CNA=%d RNR=%d)\n",
+                   ack_bits, old_status,
+                   !!(old_status & 0x8000), !!(old_status & 0x4000),
+                   !!(old_status & 0x2000), !!(old_status & 0x1000)));
+    }
 
     /* Clear command word and acknowledge interrupts */
     set_uint16(s->scb + 2, 0);
     s->scb_status &= ~(command & SCB_ACK_MASK);
+    
+    if (ack_bits) {
+        DBG(printf("SCB: After ACK - Status=0x%04x (CX=%d FR=%d CNA=%d RNR=%d)\n",
+                   s->scb_status,
+                   !!(s->scb_status & 0x8000), !!(s->scb_status & 0x4000),
+                   !!(s->scb_status & 0x2000), !!(s->scb_status & 0x1000)));
+    }
 
     /* Process Command Unit (CU) commands */
     switch (cuc) {
@@ -2317,6 +2608,17 @@ static void i82596_flush_queue_timer(void *opaque)
     }
 }
 
+static void i82596_arp_reply_timer(void *opaque)
+{
+    I82596State *s = opaque;
+    if (s->arp_reply_pending) {
+        DBG(printf("ARP: Timer fired, injecting delayed ARP reply (%zu bytes)\n", 
+                   s->arp_reply_len));
+        i82596_receive(qemu_get_queue(s->nic), s->arp_reply_buf, s->arp_reply_len);
+        s->arp_reply_pending = false;
+    }
+}
+
 void i82596_common_init(DeviceState *dev, I82596State *s, NetClientInfo *info)
 {
     if (s->conf.macaddr.a[0] == 0) {
@@ -2332,7 +2634,10 @@ void i82596_common_init(DeviceState *dev, I82596State *s, NetClientInfo *info)
                                     i82596_flush_queue_timer, s);
         s->throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                     i82596_bus_throttle_timer, s);
+        s->arp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    i82596_arp_reply_timer, s);
     }
 
     s->lnkst = 0x8000; /* initial link state: up */
+    s->arp_reply_pending = false;
 }
