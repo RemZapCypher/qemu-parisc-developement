@@ -172,6 +172,10 @@ enum commands {
 #define RFD_STATUS_TRUNC      0x0020  /* Received frame truncated due to buffer size */
 #define RFD_STATUS_NOBUFS     0x0200  /* No buffer resources available for frame reception */
 
+#define RFD_STATUS_IAMATCH    0x0800  /* Individual Address Match */
+#define RFD_STATUS_MULTICAST  0x0004  /* Multicast address match - Bit 2 */
+#define RFD_STATUS_BROADCAST  0x0008  /* Broadcast packet received - Bit 3 */
+
 /* TX ERRORS */
 #define TX_COLLISIONS       0x0020  /* TX collision detection flag */
 #define TX_HEARTBEAT_ERRORS 0x0040  /* Heartbeat signal lost during transmission */
@@ -690,6 +694,37 @@ static int i82596_tx_process_frame(I82596State *s, bool insert_crc)
         if (is_raw_ip) {
             DBG(printf("TX: Detected raw IP packet (length %d), wrapping in Ethernet frame\n", total_len));
         } else {
+            printf("\n=== TX ARP PACKET ANALYSIS (RAW) ===\n");
+            printf("TX: Detected raw ARP packet (length %d)\n", total_len);
+            printf("Raw ARP packet dump:\n");
+            for (int i = 0; i < total_len && i < 64; i++) {
+                printf("%02x ", s->tx_buffer[i]);
+                if ((i + 1) % 16 == 0) printf("\n");
+            }
+            if (total_len % 16 != 0) printf("\n");
+            
+            if (total_len >= 28) {
+                uint16_t arp_op = (s->tx_buffer[6] << 8) | s->tx_buffer[7];
+                uint8_t sender_mac[6], target_mac[6];
+                memcpy(sender_mac, &s->tx_buffer[8], 6);
+                memcpy(target_mac, &s->tx_buffer[18], 6);
+                uint32_t sender_ip = (s->tx_buffer[14] << 24) | (s->tx_buffer[15] << 16) | 
+                                    (s->tx_buffer[16] << 8) | s->tx_buffer[17];
+                uint32_t target_ip = (s->tx_buffer[24] << 24) | (s->tx_buffer[25] << 16) | 
+                                    (s->tx_buffer[26] << 8) | s->tx_buffer[27];
+                
+                printf("TX ARP Operation: %d (%s)\n", arp_op, 
+                       arp_op == 1 ? "REQUEST" : arp_op == 2 ? "REPLY" : "UNKNOWN");
+                printf("TX Sender: MAC=" MAC_FMT " IP=%d.%d.%d.%d\n",
+                       MAC_ARG(sender_mac),
+                       (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
+                       (sender_ip >> 8) & 0xFF, sender_ip & 0xFF);
+                printf("TX Target: MAC=" MAC_FMT " IP=%d.%d.%d.%d\n",
+                       MAC_ARG(target_mac),
+                       (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
+                       (target_ip >> 8) & 0xFF, target_ip & 0xFF);
+            }
+            printf("=== END TX ARP ANALYSIS ===\n\n");
             DBG(printf("TX: Detected raw ARP packet (length %d), wrapping in Ethernet frame\n", total_len));
         }
         
@@ -698,7 +733,6 @@ static int i82596_tx_process_frame(I82596State *s, bool insert_crc)
         int raw_len = total_len;
         total_len = 0;
         if (is_raw_arp) {
-            /* ARP: broadcast */
             s->tx_buffer[total_len++] = 0xff;
             s->tx_buffer[total_len++] = 0xff;
             s->tx_buffer[total_len++] = 0xff;
@@ -706,7 +740,6 @@ static int i82596_tx_process_frame(I82596State *s, bool insert_crc)
             s->tx_buffer[total_len++] = 0xff;
             s->tx_buffer[total_len++] = 0xff;
         } else {
-            /* IP: gateway MAC (52:55:0a:00:02:02) */
             s->tx_buffer[total_len++] = 0x52;
             s->tx_buffer[total_len++] = 0x55;
             s->tx_buffer[total_len++] = 0x0a;
@@ -865,12 +898,26 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
                    s->tx_buffer[38], s->tx_buffer[39], s->tx_buffer[40], s->tx_buffer[41]));
     }
     
+    bool is_arp_for_gateway = false;
+    if (frame_len >= 60 && 
+        s->tx_buffer[12] == 0x08 && s->tx_buffer[13] == 0x06 &&  
+        s->tx_buffer[14] == 0x08 && s->tx_buffer[15] == 0x00 &&  
+        s->tx_buffer[16] == 0x06 && s->tx_buffer[17] == 0x04 &&  
+        s->tx_buffer[18] == 0x00 && s->tx_buffer[19] == 0x01 &&  
+        s->tx_buffer[36] == 10 && s->tx_buffer[37] == 0 &&       
+        s->tx_buffer[38] == 2 && s->tx_buffer[39] == 2) {        
+        is_arp_for_gateway = true;
+    }
+    
     /* We check if loopback is their otherwise if zero normal tx */
     if (I596_LOOPBACK) {
         i82596_receive(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
     } else {
         if (s->nic) {
             qemu_send_packet_raw(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
+            if (is_arp_for_gateway) {
+                printf("TX: ARP request for gateway detected - SENT to slirp, will also reply ourselves\n");
+            }
             
              /* The packet is now wrapped in Ethernet frame, so ARP starts at offset 14.
              * Ethernet header (14 bytes):
@@ -887,12 +934,12 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
              *   Bytes 36-39: Target IP (10.0.2.2)
              */
             if (frame_len >= 60 && 
-                s->tx_buffer[12] == 0x08 && s->tx_buffer[13] == 0x06 &&  /* EtherType: ARP */
-                s->tx_buffer[14] == 0x08 && s->tx_buffer[15] == 0x00 &&  /* HW type */
-                s->tx_buffer[16] == 0x06 && s->tx_buffer[17] == 0x04 &&  /* HW/Proto len */
-                s->tx_buffer[18] == 0x00 && s->tx_buffer[19] == 0x01 &&  /* Op: request */
-                s->tx_buffer[36] == 10 && s->tx_buffer[37] == 0 &&       /* Target IP */
-                s->tx_buffer[38] == 2 && s->tx_buffer[39] == 2) {        /* 10.0.2.2 */
+                s->tx_buffer[12] == 0x08 && s->tx_buffer[13] == 0x06 &&  
+                s->tx_buffer[14] == 0x08 && s->tx_buffer[15] == 0x00 &&  
+                s->tx_buffer[16] == 0x06 && s->tx_buffer[17] == 0x04 &&  
+                s->tx_buffer[18] == 0x00 && s->tx_buffer[19] == 0x01 &&  
+                s->tx_buffer[36] == 10 && s->tx_buffer[37] == 0 &&       
+                s->tx_buffer[38] == 2 && s->tx_buffer[39] == 2) {        
                 
                 DBG(printf("TX: ARP request for slirp gateway 10.0.2.2 detected (HP-UX raw format)\n"));
                 DBG(printf("TX: HP-UX Request details:\n"));
@@ -909,26 +956,28 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
                           s->tx_buffer[33], s->tx_buffer[34], s->tx_buffer[35]));
                 DBG(printf("  [36-39] Target IP: %d.%d.%d.%d\n",
                           s->tx_buffer[36], s->tx_buffer[37], s->tx_buffer[38], s->tx_buffer[39]));
+                
                 uint8_t arp_reply[58];  
-                memcpy(arp_reply, s->tx_buffer + 6, 6);
+                memcpy(arp_reply, s->tx_buffer + 20, 6);  
                 arp_reply[6] = 0x52; arp_reply[7] = 0x55;
                 arp_reply[8] = 0x0a; arp_reply[9] = 0x00;
                 arp_reply[10] = 0x02; arp_reply[11] = 0x02;
                 arp_reply[12] = 0x08; arp_reply[13] = 0x06;
-                arp_reply[14] = 0x00; arp_reply[15] = 0x01;
-                arp_reply[16] = 0x08; arp_reply[17] = 0x00;
-                arp_reply[18] = 0x06; arp_reply[19] = 0x04;
-                arp_reply[20] = 0x00; arp_reply[21] = 0x02;
-                arp_reply[22] = 0x52;  arp_reply[23] = 0x55;
-                arp_reply[24] = 0x0a;  arp_reply[25] = 0x00;
+                arp_reply[14] = 0x00; arp_reply[15] = 0x01;  /* Hardware Type: Ethernet */
+                arp_reply[16] = 0x08; arp_reply[17] = 0x00;  /* Protocol Type: IPv4 */
+                arp_reply[18] = 0x06; arp_reply[19] = 0x04;  /* HW len=6, Proto len=4 */
+                arp_reply[20] = 0x00; arp_reply[21] = 0x02;  /* Operation: Reply */
+                arp_reply[22] = 0x52; arp_reply[23] = 0x55;
+                arp_reply[24] = 0x0a; arp_reply[25] = 0x00;
                 arp_reply[26] = 0x02; arp_reply[27] = 0x02;
-                arp_reply[28] = 0x0a; arp_reply[29] = 0x00;
+                arp_reply[28] = 0x0a; arp_reply[29] = 0x00;  /* Sender IP: 10.0.2.2 */
                 arp_reply[30] = 0x02; arp_reply[31] = 0x02;
-                memcpy(arp_reply + 32, s->tx_buffer + 20, 6);
-                memcpy(arp_reply + 38, s->tx_buffer + 26, 4);
-                size_t arp_reply_size = 42;
-                DBG(printf("TX: Built STANDARD ARP reply (not HP-UX format)\n"));
-                DBG(printf("TX: Reply ARP [14-21]: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                memcpy(arp_reply + 32, s->tx_buffer + 20, 6);  /* Target MAC = Request sender MAC */
+                memcpy(arp_reply + 38, s->tx_buffer + 26, 4);  /* Target IP = Request sender IP */
+                memset(arp_reply + 42, 0, 16);
+                size_t arp_reply_size = 58;
+                DBG(printf("TX: Built HP-UX ARP reply (58 bytes, will be padded to 60 by net core)\n"));
+                DBG(printf("TX: Reply ARP [14-21]: %02x %02x %02x %02x %02x %02x %02x %02x (HW/Proto/Lens/Op)\n",
                           arp_reply[14], arp_reply[15], arp_reply[16], arp_reply[17],
                           arp_reply[18], arp_reply[19], arp_reply[20], arp_reply[21]));
                 DBG(printf("TX: Reply Sender MAC [22-27]: %02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -941,19 +990,27 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
                           arp_reply[35], arp_reply[36], arp_reply[37]));
                 DBG(printf("TX: Reply Target IP [38-41]: %d.%d.%d.%d\n",
                           arp_reply[38], arp_reply[39], arp_reply[40], arp_reply[41]));
+                
+                s->arp_reply_pending = true;
                 memcpy(s->arp_reply_buf, arp_reply, arp_reply_size);
                 s->arp_reply_len = arp_reply_size;
-                s->arp_reply_pending = true;
-                
-                DBG(printf("TX: Scheduling DELAYED ARP reply injection (1ms delay), size=%zu\n", arp_reply_size));
-                DBG(printf("TX: Reply will be unwrapped in RX path for HP-UX\n"));
-                
-                timer_mod(s->arp_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000); /* 1ms */
+                printf("\n=== ARP REPLY PREPARED (will inject after TX complete) ===\n");
+                printf("TX: ARP REQUEST detected - reply will be injected after TX finishes\n");
+                printf("TX: Reply size: %zu bytes\n", arp_reply_size);
+                printf("=== END ARP PREPARATION ===\n\n");
             }
         }
     }
 
 tx_complete:
+    if (s->arp_reply_pending) {
+        printf("\n=== SCHEDULING DELAYED ARP REPLY AFTER TX COMPLETE ===\n");
+        printf("TX: Reply size: %zu bytes\n", s->arp_reply_len);
+        
+        timer_mod(s->arp_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 20);
+        
+        printf("TX: ARP reply timer scheduled for +20ms\n");
+    }
     i82596_tx_update_status(s, tfd_addr, &tfd, tx_status, collision_count, success);
     i82596_update_statistics(s, true, tx_status, collision_count);
     if (tfd.command & CMD_INTR) {
@@ -1276,7 +1333,6 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     bool out_of_resources = false;
     size_t crc_size = i82596_get_crc_size(s);
     bool unwrapped_packet = false;
-    const uint8_t *original_buf = buf;
 
     printf("\n*** i82596_receive() CALLED: size=%zu rx_status=%d loopback=%d ***\n", 
            size, s->rx_status, I596_LOOPBACK);
@@ -1295,6 +1351,16 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     }
 
     bool passes_filter = i82596_check_packet_filter(s, buf, &is_broadcast);
+
+    if (is_broadcast) {
+        rx_status |= RFD_STATUS_BROADCAST;
+        DBG(printf("RX: Packet classified as BROADCAST\n"));
+    } else if (buf[0] & 0x01) {
+        rx_status |= RFD_STATUS_MULTICAST;
+        DBG(printf("RX: Packet classified as MULTICAST\n"));
+    } else {
+        DBG(printf("RX: Packet classified as UNICAST (no classification bit set)\n"));
+    }
 
     if (!i82596_monitor(s, buf, size, passes_filter) && (!passes_filter)) {
         DBG(printf("RX: Handled by monitor mode\n"));
@@ -1323,7 +1389,35 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                 DBG(printf("RX: Unwrapped packet size=%zu (raw %s)\n", 
                            frame_size, ethertype == 0x0806 ? "ARP" : "IP"));
                 
+                if (ethertype == 0x0800 && frame_size >= 20) {
+                    DBG(printf("RX: IP Header [0-19]: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                               packet_data[0], packet_data[1], packet_data[2], packet_data[3], packet_data[4], 
+                               packet_data[5], packet_data[6], packet_data[7], packet_data[8], packet_data[9],
+                               packet_data[10], packet_data[11], packet_data[12], packet_data[13], packet_data[14],
+                               packet_data[15], packet_data[16], packet_data[17], packet_data[18], packet_data[19]));
+                    uint8_t ip_proto = packet_data[9];
+                    if (ip_proto == 1 && frame_size >= 28) {  /* ICMP */
+                        DBG(printf("RX: ICMP packet [20-27]: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                                   packet_data[20], packet_data[21], packet_data[22], packet_data[23],
+                                   packet_data[24], packet_data[25], packet_data[26], packet_data[27]));
+                        uint8_t icmp_type = packet_data[20];
+                        uint8_t icmp_code = packet_data[21];
+                        uint16_t icmp_id = (packet_data[24] << 8) | packet_data[25];
+                        uint16_t icmp_seq = (packet_data[26] << 8) | packet_data[27];
+                        DBG(printf("RX: ICMP Type=%d Code=%d ID=0x%04x Seq=%d\n", icmp_type, icmp_code, icmp_id, icmp_seq));
+                    }
+                }
+                
                 if (ethertype == 0x0806 && frame_size >= 26) {
+                    printf("\n=== ARP PACKET SECURITY ANALYSIS ===\n");
+                    printf("ARP Packet Size: %zu bytes (unwrapped from Ethernet)\n", frame_size);
+                    printf("Full ARP packet dump:\n");
+                    for (size_t i = 0; i < frame_size && i < 64; i++) {
+                        printf("%02x ", packet_data[i]);
+                        if ((i + 1) % 16 == 0) printf("\n");
+                    }
+                    if (frame_size % 16 != 0) printf("\n");
+                    
                     DBG(printf("RX: Unwrapped ARP [0-13]: %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x | %02x %02x\n",
                                packet_data[0], packet_data[1], packet_data[2], packet_data[3], packet_data[4], packet_data[5],
                                packet_data[6], packet_data[7], packet_data[8], packet_data[9], packet_data[10], packet_data[11],
@@ -1331,6 +1425,50 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                     DBG(printf("RX: Unwrapped ARP [14-25]: %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x\n",
                                packet_data[14], packet_data[15], packet_data[16], packet_data[17], packet_data[18], packet_data[19],
                                packet_data[20], packet_data[21], packet_data[22], packet_data[23], packet_data[24], packet_data[25]));
+                    uint16_t arp_op = (packet_data[6] << 8) | packet_data[7];
+                    uint8_t sender_mac[6], target_mac[6];
+                    memcpy(sender_mac, &packet_data[8], 6);
+                    memcpy(target_mac, &packet_data[18], 6);
+                    uint32_t sender_ip = (packet_data[14] << 24) | (packet_data[15] << 16) | 
+                                        (packet_data[16] << 8) | packet_data[17];
+                    uint32_t target_ip = (packet_data[24] << 24) | (packet_data[25] << 16) | 
+                                        (packet_data[26] << 8) | packet_data[27];
+                    
+                    printf("ARP Operation: %d (%s)\n", arp_op, 
+                           arp_op == 1 ? "REQUEST" : arp_op == 2 ? "REPLY" : "UNKNOWN");
+                    printf("Sender: MAC=" MAC_FMT " IP=%d.%d.%d.%d\n",
+                           MAC_ARG(sender_mac),
+                           (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
+                           (sender_ip >> 8) & 0xFF, sender_ip & 0xFF);
+                    printf("Target: MAC=" MAC_FMT " IP=%d.%d.%d.%d\n",
+                           MAC_ARG(target_mac),
+                           (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
+                           (target_ip >> 8) & 0xFF, target_ip & 0xFF);
+                    printf("=== END ARP ANALYSIS ===\n\n");
+                    if (arp_op == 1 && target_ip == 0x0a00020f) {  /* ARP request for 10.0.2.15 (HP-UX) */
+                        DBG(printf("RX: Slirp ARP request for HP-UX (10.0.2.15), sending reply immediately!\n"));
+                        
+                        uint8_t slirp_arp_reply[60];
+                        const uint8_t hpux_mac[6] = {0x08, 0x00, 0x09, 0xef, 0x34, 0xf6};
+                        
+                        memcpy(slirp_arp_reply, buf + 6, 6);  /* Dest = slirp's MAC (from src of request) */
+                        memcpy(slirp_arp_reply + 6, hpux_mac, 6);  /* Src = HP-UX's MAC */
+                        slirp_arp_reply[12] = 0x08; slirp_arp_reply[13] = 0x06;  /* EtherType: ARP */
+                        slirp_arp_reply[14] = 0x00; slirp_arp_reply[15] = 0x01;  /* HW Type: Ethernet */
+                        slirp_arp_reply[16] = 0x08; slirp_arp_reply[17] = 0x00;  /* Proto Type: IPv4 */
+                        slirp_arp_reply[18] = 0x06; slirp_arp_reply[19] = 0x04;  /* HW/Proto lengths */
+                        slirp_arp_reply[20] = 0x00; slirp_arp_reply[21] = 0x02;  /* Operation: Reply */
+                        memcpy(slirp_arp_reply + 22, hpux_mac, 6);  /* HP-UX's MAC */
+                        slirp_arp_reply[28] = 0x0a; slirp_arp_reply[29] = 0x00;  /* HP-UX's IP: 10.0.2.15 */
+                        slirp_arp_reply[30] = 0x02; slirp_arp_reply[31] = 0x0f;
+                        memcpy(slirp_arp_reply + 32, packet_data + 8, 6);  /* Slirp's MAC from request */
+                        memcpy(slirp_arp_reply + 38, packet_data + 14, 4);  /* Slirp's IP from request */
+                        DBG(printf("RX: Sending ARP reply to slirp: HP-UX is at %02x:%02x:%02x:%02x:%02x:%02x\n",
+                                  slirp_arp_reply[22], slirp_arp_reply[23], slirp_arp_reply[24],
+                                  slirp_arp_reply[25], slirp_arp_reply[26], slirp_arp_reply[27]));
+                        qemu_send_packet(qemu_get_queue(s->nic), slirp_arp_reply, 42);
+                        return 0;
+                    }
                 }
             }
         }
@@ -1400,15 +1538,21 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 
         } else {
             if (unwrapped_packet) {
-                memcpy(rfd.dest_addr, original_buf, 6);
-                memcpy(rfd.src_addr, original_buf + 6, 6);
-                rfd.length_field = frame_size;
+                memcpy(rfd.dest_addr, buf, 6);
+                memcpy(rfd.src_addr, buf + 6, 6);
+                uint16_t eth_type = (buf[12] << 8) | buf[13];
+                rfd.length_field = eth_type;
                 DBG(printf("RX: Populated RFD header for unwrapped packet: "
-                          "dest=" MAC_FMT " src=" MAC_FMT " len=%zu (IEEE 802.3 raw)\n",
-                          MAC_ARG(rfd.dest_addr), MAC_ARG(rfd.src_addr), frame_size));
+                          "dest=" MAC_FMT " src=" MAC_FMT " type=0x%04x (raw packet in RBDs)\n",
+                          MAC_ARG(rfd.dest_addr), MAC_ARG(rfd.src_addr), eth_type));
+                rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+            } else {
+                rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
             }
             
-            rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+            if (!unwrapped_packet) {
+                rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
+            }
             bool has_rbd_chain = (rbd_addr != I596_NULL && rbd_addr != 0 && rbd_addr != 0xFFFFFFFF);
             
             if (!has_rbd_chain) {
@@ -1489,7 +1633,7 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     } while (bytes_copied < payload_size);
 
 rx_complete:
-    if (I596_CRCINM && !I596_LOOPBACK && packet_completed) {
+    if (I596_CRCINM && !I596_LOOPBACK && packet_completed && !unwrapped_packet) {
         rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
         bool used_rbds = (rbd_addr != I596_NULL && rbd_addr != 0 && rbd_addr != 0xFFFFFFFF);
         
@@ -2359,7 +2503,6 @@ static void examine_scb(I82596State *s)
             break;
         }
 
-        /* Find first usable RFD with valid RBD */
         struct i82596_rx_descriptor test_rfd;
         hwaddr test_rfd_addr = rfd;
         uint32_t test_rfd_log = rfd_log;
@@ -2612,9 +2755,9 @@ static void i82596_arp_reply_timer(void *opaque)
 {
     I82596State *s = opaque;
     if (s->arp_reply_pending) {
-        DBG(printf("ARP: Timer fired, injecting delayed ARP reply (%zu bytes)\n", 
-                   s->arp_reply_len));
+        
         i82596_receive(qemu_get_queue(s->nic), s->arp_reply_buf, s->arp_reply_len);
+        DBG(printf("=== END ARP TIMER CALLBACK ===\n\n"));
         s->arp_reply_pending = false;
     }
 }
