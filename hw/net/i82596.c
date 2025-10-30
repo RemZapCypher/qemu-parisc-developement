@@ -5,7 +5,7 @@
  *
  * Additional functionality added by:
  * Soumyajyotii Ssarkar <soumyajyotisarkar23@gmail.com>
- * During GSOC 2025.
+ * During GSOC 2025 under mentorship of Helge Deller.
  *
  * This work is licensed under the GNU GPL license version 2 or later.
  * This software was written to be compatible with the specification:
@@ -122,9 +122,10 @@
 #define CMD_SUSP        0x4000
 #define CMD_INTR        0x2000
 
-#define DUMP_BUF_SZ                 304
 #define ISCP_BUSY                   0x01
 #define NANOSECONDS_PER_MICROSECOND 1000
+
+#define DUMP_BUF_SZ                 304
 
 enum commands {
         CmdNOp = 0, CmdSASetup = 1, CmdConfigure = 2, CmdMulticastList = 3,
@@ -145,41 +146,40 @@ enum commands {
 #define CSMA_BACKOFF_LIMIT     10
 
 /* Global Flags fetched from config bytes */
-#define I596_PREFETCH       (s->config[0] & 0x80)           /* Enable prefetch of data structures */
-#define SAVE_BAD_FRAMES     (s->config[2] & 0x80)           /* Store frames with errors in memory */
-#define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)           /* If 1, do not insert MAC in Tx Packet */
-#define I596_LOOPBACK       (s->config[3] >> 6)             /* Determine the Loopback mode */
-#define I596_PROMISC        (s->config[8] & 0x01)           /* Receive all packets regardless of MAC */
-#define I596_BC_DISABLE     (s->config[8] & 0x02)           /* Disable reception of broadcast packets */
-#define I596_NOCRC_INS      (s->config[8] & 0x08)           /* Do not append CRC to Tx frame */
-#define I596_CRC16_32       (s->config[8] & 0x10)           /* Use CRC-32 if set, otherwise CRC-16 */
-#define I596_PADDING        (s->config[8] & 0x80)           /* Add padding to short frames */
-#define I596_MIN_FRAME_LEN  (s->config[10])                 /* Minimum Ethernet frame length */
-#define I596_CRCINM         (s->config[11] & 0x04)          /* Rx CRC appended in memory */
-#define I596_MONITOR_MODE   ((s->config[11] >> 6) & 0x03)   /* Determine monitor mode */
-#define I596_MC_ALL         (s->config[11] & 0x20)          /* Receive all multicast packets */
-#define I596_FULL_DUPLEX    (s->config[12] & 0x40)          /* Full-duplex mode if set, half if clear */
-#define I596_MULTIIA        (s->config[13] & 0x40)          /* Enable multiple individual addresses */
+#define I596_PREFETCH       (s->config[0] & 0x80)
+#define SAVE_BAD_FRAMES     (s->config[2] & 0x80)
+#define I596_NO_SRC_ADD_IN  (s->config[3] & 0x08)
+#define I596_LOOPBACK       (s->config[3] >> 6)
+#define I596_PROMISC        (s->config[8] & 0x01)
+#define I596_BC_DISABLE     (s->config[8] & 0x02)
+#define I596_NOCRC_INS      (s->config[8] & 0x08)
+#define I596_CRC16_32       (s->config[8] & 0x10)
+#define I596_PADDING        (s->config[8] & 0x80)
+#define I596_MIN_FRAME_LEN  (s->config[10])
+#define I596_CRCINM         (s->config[11] & 0x04)
+#define I596_MONITOR_MODE   ((s->config[11] >> 6) & 0x03)
+#define I596_MC_ALL         (s->config[11] & 0x20)
+#define I596_FULL_DUPLEX    (s->config[12] & 0x40)
+#define I596_MULTIIA        (s->config[13] & 0x40)
 
-/* RX ERRORS */
-#define RX_COLLISIONS         0x0001  /* Collision detected during frame reception */
-#define RX_LENGTH_ERRORS      0x0080  /* Frame length error during reception */
-#define RX_OVER_ERRORS        0x0100  /* Receiver overflow error */
-#define RX_FIFO_ERRORS        0x0400  /* FIFO buffer overflow during reception */
-#define RX_FRAME_ERRORS       0x0800  /* Frame alignment error */
-#define RX_CRC_ERRORS         0x1000  /* CRC checksum error in received frame */
-#define RX_LENGTH_ERRORS_ALT  0x2000  /* Duplicate definition - frame length error flag */
-#define RFD_STATUS_TRUNC      0x0020  /* Received frame truncated due to buffer size */
-#define RFD_STATUS_NOBUFS     0x0200  /* No buffer resources available for frame reception */
+/* RX Error flags */
+#define RX_COLLISIONS         0x0001
+#define RX_LENGTH_ERRORS      0x0080
+#define RX_OVER_ERRORS        0x0100
+#define RX_FIFO_ERRORS        0x0400
+#define RX_FRAME_ERRORS       0x0800
+#define RX_CRC_ERRORS         0x1000
+#define RX_LENGTH_ERRORS_ALT  0x2000
+#define RFD_STATUS_TRUNC      0x0020
+#define RFD_STATUS_NOBUFS     0x0200
 
-/* TX ERRORS */
-#define TX_COLLISIONS       0x0020  /* TX collision detection flag */
-#define TX_HEARTBEAT_ERRORS 0x0040  /* Heartbeat signal lost during transmission */
-#define TX_CARRIER_ERRORS   0x0400  /* Carrier sense signal lost during transmission */
-#define TX_COLLISIONS_ALT   0x0800  /* Frame experienced collisions during transmission */
-#define TX_ABORTED_ERRORS   0x1000  /* Transmission aborted due to excessive collisions */
+/* TX Error flags */
+#define TX_COLLISIONS       0x0020
+#define TX_HEARTBEAT_ERRORS 0x0040
+#define TX_CARRIER_ERRORS   0x0400
+#define TX_COLLISIONS_ALT   0x0800
+#define TX_ABORTED_ERRORS   0x1000
 
-/* Forward declarations */
 static void i82596_update_scb_irq(I82596State *s, bool trigger);
 static void i82596_update_cu_status(I82596State *s, uint16_t cmd_status, bool generate_interrupt);
 static void update_scb_status(I82596State *s);
@@ -188,9 +188,9 @@ static bool i82596_check_medium_status(I82596State *s);
 static int i82596_csma_backoff(I82596State *s, int retry_count);
 static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len);
 static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len);
-/* static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len); */
 static void i82596_bus_throttle_timer(void *opaque);
 static void i82596_flush_queue_timer(void *opaque);
+static int i82596_flush_packet_queue(I82596State *s);
 static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_flags,
                                      uint16_t collision_count);
 
@@ -234,49 +234,34 @@ static void i82596_record_error(I82596State *s, uint16_t error_type, bool is_tx)
         if (error_type & TX_ABORTED_ERRORS) {
             s->tx_aborted_errors++;
             set_uint32(s->scb + 28, s->tx_aborted_errors);
-            DBG(printf("TX: collisions count=%d\n",s->tx_aborted_errors));
-        }
-
-        if (error_type & TX_CARRIER_ERRORS) {
-            DBG(printf("TX: Carrier sense lost\n"));
-        }
-
-        if (error_type & TX_HEARTBEAT_ERRORS) {
-            DBG(printf("TX: Heartbeat check failure\n"));
         }
     } else {
         if (error_type & RX_CRC_ERRORS) {
             s->crc_err++;
             set_uint32(s->scb + 16, s->crc_err);
-            DBG(printf("RX: CRC error, count=%d\n", s->crc_err));
         }
 
         if (error_type & (RX_LENGTH_ERRORS | RX_LENGTH_ERRORS_ALT | RX_FRAME_ERRORS)) {
             s->align_err++;
             set_uint32(s->scb + 18, s->align_err);
-            DBG(printf("RX: Alignment/Length error, count=%d\n", s->align_err));
         }
 
         if (error_type & RFD_STATUS_NOBUFS) {
             s->resource_err++;
             set_uint32(s->scb + 20, s->resource_err);
-            DBG(printf("RX: No buffer resources, count=%d\n", s->resource_err));
         }
 
         if (error_type & (RX_OVER_ERRORS | RX_FIFO_ERRORS)) {
             s->over_err++;
             set_uint32(s->scb + 22, s->over_err);
-            DBG(printf("RX: Overrun/FIFO error, count=%d\n", s->over_err));
         }
 
         if (error_type & RFD_STATUS_TRUNC) {
             s->short_fr_error++;
             set_uint32(s->scb + 26, s->short_fr_error);
-            DBG(printf("RX: Frame truncated, count=%d\n", s->short_fr_error));
         }
     }
 }
-
 
 /* Packet Header Debugger */
 struct qemu_ether_header {
@@ -291,7 +276,6 @@ struct qemu_ether_header {
            MAC_ARG(hdr->ether_dhost), MAC_ARG(hdr->ether_shost),        \
            be16_to_cpu(hdr->ether_type));       \
 } while (0)
-
 static void i82596_cleanup(I82596State *s)
 {
     if (s->throttle_timer) {
@@ -300,6 +284,9 @@ static void i82596_cleanup(I82596State *s)
     if (s->flush_queue_timer) {
         timer_del(s->flush_queue_timer);
     }
+    s->queue_head = 0;
+    s->queue_tail = 0;
+    s->queue_count = 0;
 }
 
 static void i82596_s_reset(I82596State *s)
@@ -402,31 +389,6 @@ static inline uint32_t i82596_translate_address(I82596State *s, uint32_t addr, b
         return addr;
     }
 }
-
-/* Design the Tx functions
- * from what we know, the initial tfd + 0 passes the values to the kernel
- * so we need a function that determines the error
- * and passes the required values to the kernel side
- *
- * For the Tx functions
- * struct i82596_tx_frame_descriptor
- * struct i82596_tx_buffer_descriptor
- * tx_buffer[PKT_BUF_SZ]
- *
- * i82596_tx_max_collisions(s, tx_status): We can pass it the tx frame and it will update the statistics
- * and pass it back
- *
- * i82596_tx_status_tracker(s, tx_status): This will take the status bits of the tx frame
- * and then pass the required values to it and then update the kernel side.
- *
- * i82596_desc_read(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will load the frame from the memory
- * Making it easier for us to parse the values.
- * i82596_desc_write(I82596State *s, hwaddr p, struct i82596_descriptor *desc): This will write the frame back to the memory
- *
- * We also need similar debug functions to tulip for the Tx and the Rx functions
- * i82596_dump_tx_descriptor: This will dump the contents of the Tx descriptor
- * i82596_dump_rx_descriptor: This will dump the contents of the Rx descriptor
- */
 
 /* (TFD) Transmit Frame Descriptor  */
 struct i82596_tx_descriptor {
@@ -621,9 +583,7 @@ static int i82596_tx_copy_buffers(I82596State *s, hwaddr tfd_addr,
 
     if (simplified_mode) {
         uint16_t frame_len = desc->tcb_count & SIZE_MASK;
-        DBG(printf("TX: Simplified mode, reading %d bytes from TFD\n", frame_len));
         if (frame_len == 0 || frame_len > sizeof(s->tx_buffer)) {
-            DBG(printf("TX: Invalid frame length %d\n", frame_len));
             return -1;
         }
         address_space_read(&address_space_memory, tfd_addr + 16,
@@ -637,21 +597,14 @@ static int i82596_tx_copy_buffers(I82596State *s, hwaddr tfd_addr,
             uint32_t buf_addr;
             tbd_addr = i82596_translate_address(s, tbd_addr, false);
             if (tbd_addr == 0 || tbd_addr == I596_NULL) {
-                DBG(printf("TX: Invalid TBD address\n"));
                 return -1;
             }
             i82596_tbd_read(s, tbd_addr, &tbd);
-            i82596_tbd_dump(s, tbd_addr, &tbd);
+            DBG(i82596_tbd_dump(s, tbd_addr, &tbd));
             buf_size = tbd.size & SIZE_MASK;
             buf_addr = i82596_translate_address(s, tbd.buffer, true);
 
-            DBG(printf("  TBD @0x%08x: size=0x%04x(mask=0x%04x) len=%d buf_addr=0x%08x EOF=%d link=0x%08x\n",
-                       tbd_addr, tbd.size, SIZE_MASK, buf_size, buf_addr,
-                       !!(tbd.size & I596_EOF), tbd.link));
-
             if (total_len + buf_size > sizeof(s->tx_buffer)) {
-                DBG(printf("TX: Buffer overflow, max=%zu current=%d adding=%d\n",
-                           sizeof(s->tx_buffer), total_len, buf_size));
                 return -1;
             }
 
@@ -682,19 +635,16 @@ static int i82596_tx_process_frame(I82596State *s, bool insert_crc)
 
     if (I596_NO_SRC_ADD_IN == 0 && total_len >= ETH_ALEN * 2) {
         memcpy(&s->tx_buffer[ETH_ALEN], s->conf.macaddr.a, ETH_ALEN);
-        DBG(printf("TX: Inserted source MAC address\n"));
     }
 
     if (I596_PADDING && total_len < I596_MIN_FRAME_LEN) {
         size_t pad_len = I596_MIN_FRAME_LEN - total_len;
         memset(s->tx_buffer + total_len, 0, pad_len);
         total_len = I596_MIN_FRAME_LEN;
-        DBG(printf("TX: Added %zu bytes of padding\n", pad_len));
     }
 
     if (insert_crc) {
         total_len = i82596_append_crc(s, s->tx_buffer, total_len);
-        DBG(printf("TX: CRC appended, total length now %d\n", (int)total_len));
     }
 
     s->tx_frame_len = total_len;
@@ -706,12 +656,12 @@ static void i82596_tx_update_status(I82596State *s, hwaddr tfd_addr,
                                     uint16_t tx_status, uint16_t collision_count,
                                     bool success)
 {
-    desc->status_bits = STAT_C;  /* Command complete */
+    desc->status_bits = STAT_C;
 
     if (success) {
         desc->status_bits |= STAT_OK;
     } else {
-        desc->status_bits |= STAT_A;  /* Abort */
+        desc->status_bits |= STAT_A;
     }
 
     if (collision_count > 0) {
@@ -719,9 +669,6 @@ static void i82596_tx_update_status(I82596State *s, hwaddr tfd_addr,
     }
 
     i82596_tx_tfd_write(s, tfd_addr, desc);
-
-    DBG(printf("TX: Updated TFD status=0x%04x tx_status=0x%04x collisions=%d\n",
-               desc->status_bits, tx_status, collision_count));
 }
 
 static int i82596_tx_csma_cd(I82596State *s, uint16_t *tx_status)
@@ -739,14 +686,11 @@ static int i82596_tx_csma_cd(I82596State *s, uint16_t *tx_status)
         if (medium_available) {
             break;
         }
-        int backoff_time = i82596_csma_backoff(s, retry_count);
-        DBG(printf("CSMA/CD: Collision detected, backoff=%d µs (retry %d/%d)\n",
-                   backoff_time, retry_count + 1, CSMA_MAX_RETRIES));
+        i82596_csma_backoff(s, retry_count);
         retry_count++;
         s->total_collisions++;
     }
     if (retry_count >= CSMA_MAX_RETRIES) {
-        DBG(printf("CSMA/CD: Excessive collisions, aborting transmission\n"));
         *tx_status |= TX_ABORTED_ERRORS;
         return -1;
     }
@@ -768,10 +712,8 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
     bool success = true;
     bool insert_crc;
 
-    DBG(printf("====== TX START: TFD @0x%08x ======\n", addr));
-
     i82596_tx_tfd_read(s, tfd_addr, &tfd);
-    i82596_tx_tfd_dump(s, tfd_addr, &tfd);
+    DBG(i82596_tx_tfd_dump(s, tfd_addr, &tfd));
     s->current_tx_desc = tfd_addr;
     insert_crc = (I596_NOCRC_INS == 0) && ((tfd.command & 0x10) == 0) && !I596_LOOPBACK;
     collision_count = i82596_tx_csma_cd(s, &tx_status);
@@ -781,23 +723,19 @@ static void i82596_transmit(I82596State *s, uint32_t addr)
     }
     frame_len = i82596_tx_copy_buffers(s, tfd_addr, &tfd);
     if (frame_len < 0) {
-        DBG(printf("TX: Failed to copy buffers\n"));
         tx_status |= TX_ABORTED_ERRORS;
         success = false;
         goto tx_complete;
     }
-    DBG(printf("TX: Copied %d bytes from descriptors\n", frame_len));
     frame_len = i82596_tx_process_frame(s, insert_crc);
     if (frame_len <= 0) {
-        DBG(printf("TX: Frame processing failed\n"));
         tx_status |= TX_ABORTED_ERRORS;
         success = false;
         goto tx_complete;
     }
     s->last_tx_len = frame_len;
-    DBG(PRINT_PKTHDR("TX Send", s->tx_buffer));
-    DBG(printf("TX: Transmitting %d bytes\n", frame_len));
-    /* We check if loopback is their otherwise if zero normal tx */
+    trace_i82596_transmit(frame_len, addr);
+
     if (I596_LOOPBACK) {
         i82596_receive(qemu_get_queue(s->nic), s->tx_buffer, frame_len);
     } else {
@@ -812,55 +750,40 @@ tx_complete:
     if (tfd.command & CMD_INTR) {
         i82596_update_cu_status(s, tfd.status_bits, true);
     }
-    DBG(printf("====== TX END: status=0x%04x success=%d collisions=%d ======\n",
-               tfd.status_bits, success, collision_count));
 }
 
 bool i82596_can_receive(NetClientState *nc)
 {
-    /* All good can rx */
     I82596State *s = qemu_get_nic_opaque(nc);
-    
-    if (I596_LOOPBACK) {
-        DBG(printf("CAN_RX: FALSE - in loopback mode %d\n", I596_LOOPBACK));
+
+    if (I596_LOOPBACK || !s->lnkst) {
         return false;
     }
-    
+
+    if (s->rx_status == RX_SUSPENDED || s->rx_status == RX_IDLE || s->rx_status == RX_NO_RESOURCES) {
+        return true;
+    }
+
     if (!s->throttle_state && !I596_FULL_DUPLEX) {
-        DBG(printf("CAN_RX: FALSE - throttle off in half duplex\n"));
-        return false;
+        return (s->queue_count < PACKET_QUEUE_SIZE);
     }
 
-    if (s->rx_status == RX_SUSPENDED) {
-        DBG(printf("CAN_RX: FALSE - RX suspended\n"));
-        return false;
-    }
-
-    if (!s->lnkst) {
-        DBG(printf("CAN_RX: FALSE - Link down\n"));
-        return false;
-    }
-
-    if (timer_pending(s->flush_queue_timer)) {
-        bool can_rx = s->rx_status == RX_READY;
-        return can_rx;
-    }
     return true;
 }
 
-static int i82596_validate_receive_state(I82596State *s, size_t *sz)
+static int i82596_validate_receive_state(I82596State *s, size_t *sz, bool from_queue)
 {
     if (*sz < 14 || *sz > PKT_BUF_SZ - 4) {
         trace_i82596_receive_analysis(">>> Packet size invalid");
         return -1;
     }
 
-    if (s->rx_status == RX_SUSPENDED) {
+    if (!from_queue && s->rx_status == RX_SUSPENDED) {
         trace_i82596_receive_analysis(">>> Receiving is suspended");
         return -1;
     }
 
-    if (s->rx_status != RX_READY) {
+    if (s->rx_status != RX_READY && s->rx_status != RX_SUSPENDED) {
         trace_i82596_receive_analysis(">>> RU not ready");
         return -1;
     }
@@ -878,7 +801,6 @@ static bool i82596_check_packet_filter(I82596State *s, const uint8_t *buf, uint1
     static const uint8_t broadcast_macaddr[6] = {
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
-    /* Handle packet based on MAC address type */
     if (I596_PROMISC || I596_LOOPBACK) {
         trace_i82596_receive_analysis(">>> packet received in promiscuous mode");
         return true;
@@ -963,22 +885,43 @@ static bool i82596_monitor(I82596State *s, const uint8_t *buf, size_t sz, bool p
 
 static void i82596_update_rx_state(I82596State *s, int new_state)
 {
+    if (s->rx_status != new_state) {
+        trace_i82596_rx_state_change(s->rx_status, new_state);
+    }
+
     s->rx_status = new_state;
 
     switch (new_state) {
     case RX_NO_RESOURCES:
-        s->scb_status |= SCB_STATUS_RNR;
+        if (!s->rnr_signaled) {
+            s->scb_status |= SCB_STATUS_RNR;
+            s->rnr_signaled = true;
+        }
         break;
     case RX_SUSPENDED:
-        s->scb_status |= SCB_STATUS_RNR;
-        timer_del(s->flush_queue_timer);
+        if (!s->rnr_signaled) {
+            s->scb_status |= SCB_STATUS_RNR;
+            s->rnr_signaled = true;
+        }
+
+        if (s->queue_count > 0 && !s->flushing_queue) {
+            i82596_flush_packet_queue(s);
+            if (s->queue_count > 0) {
+                timer_mod(s->flush_queue_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 50000);
+            }
+        }
+        break;
+    case RX_READY:
+        /* When RU becomes ready, flush buffered packets */
+        if (s->queue_count > 0) {
+            i82596_flush_packet_queue(s);
+        }
         break;
     default:
         break;
     }
 }
 
-/* Store frame header fields in RFD (simplified mode only) */
 static void i82596_rx_store_frame_header(I82596State *s,
                                          struct i82596_rx_descriptor *rfd,
                                          const uint8_t *buf, size_t size)
@@ -990,25 +933,18 @@ static void i82596_rx_store_frame_header(I82596State *s,
     if (size >= 14) {
         rfd->length_field = (buf[12] << 8) | buf[13];
     }
-
-    DBG(printf("RX: Stored frame header in RFD: "
-               "dest=" MAC_FMT " src=" MAC_FMT " len=0x%04x\n",
-               MAC_ARG(rfd->dest_addr), MAC_ARG(rfd->src_addr), rfd->length_field));
 }
 
-/* Copy frame data to RFD data area (simplified mode) */
 static size_t i82596_rx_copy_to_rfd(I82596State *s, hwaddr rfd_addr,
                                     const uint8_t *buf, size_t size,
                                     size_t rfd_size)
 {
     size_t to_copy = MIN(size, rfd_size);
-    size_t data_offset = 0x1E;  /* Data starts after header fields in simplified mode */
+    size_t data_offset = 0x1E; /* Bypassing the header */
 
     if (to_copy > 0) {
         address_space_write(&address_space_memory, rfd_addr + data_offset,
                            MEMTXATTRS_UNSPECIFIED, buf, to_copy);
-        DBG(printf("RX: Copied %zu bytes to RFD data area @ 0x%08lx\n",
-                   to_copy, (unsigned long)(rfd_addr + data_offset)));
     }
     return to_copy;
 }
@@ -1023,29 +959,23 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
     *out_of_resources = false;
     *remaining_rbd = I596_NULL;
 
-    DBG(printf("RX: Processing RBD chain starting at 0x%08lx, %zu bytes to copy\n",
-               (unsigned long)rbd_addr, size));
-
     while (bytes_copied < size && current_rbd != I596_NULL && current_rbd != 0) {
         struct i82596_rx_buffer_desc rbd;
         i82596_rbd_read(s, current_rbd, &rbd);
         if (rbd.size & 0x4000) {  /* P bit set */
-            DBG(printf("RX: RBD is prefetched, skipping\n"));
             break;
         }
 
         uint16_t buf_size = rbd.size & 0x3FFF;
-        
+
         if (buf_size == 0) {
-            DBG(printf("RX: Zero buffer size, skipping RBD\n"));
             current_rbd = i82596_translate_address(s, rbd.next_rbd_addr, false);
             continue;
         }
-        
+
         hwaddr buf_addr = i82596_translate_address(s, rbd.buffer_addr, true);
         i82596_rbd_dump(s, current_rbd, &rbd);
         if (buf_addr == 0 || buf_addr == I596_NULL) {
-            DBG(printf("RX: Invalid RBD buffer address\n"));
             *out_of_resources = true;
             break;
         }
@@ -1056,17 +986,13 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
                                MEMTXATTRS_UNSPECIFIED,
                                buf + bytes_copied, to_copy);
             bytes_copied += to_copy;
-            DBG(printf("RX: Copied %zu bytes to RBD buffer @ 0x%08lx\n",
-                       to_copy, (unsigned long)buf_addr));
         }
         rbd.actual_count = to_copy | 0x4000;  /* Set F (filled) bit */
         if (bytes_copied >= size) {
             rbd.actual_count |= 0x8000;  /* Set EOF bit (bit 15) */
-            DBG(printf("RX: Marked RBD with EOF\n"));
         }
         i82596_rbd_write(s, current_rbd, &rbd);
         if (rbd.size & CMD_EOL) {  /* EL bit */
-            DBG(printf("RX: Reached end of RBD list\n"));
             if (bytes_copied < size) {
                 *out_of_resources = true;
             }
@@ -1077,9 +1003,6 @@ static size_t i82596_rx_copy_to_rbds(I82596State *s, hwaddr rbd_addr,
     }
 
     *remaining_rbd = current_rbd;
-
-    DBG(printf("RX: RBD chain copy complete, %zu bytes copied, remaining RBD: 0x%08lx\n",
-               bytes_copied, (unsigned long)*remaining_rbd));
     return bytes_copied;
 }
 
@@ -1088,9 +1011,8 @@ static inline size_t i82596_get_crc_size(I82596State *s)
     return I596_CRC16_32 ? 4 : 2;
 }
 
-ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
+static ssize_t i82596_receive_packet(I82596State *s, const uint8_t *buf, size_t size, bool from_queue)
 {
-    I82596State *s = qemu_get_nic_opaque(nc);
     struct i82596_rx_descriptor rfd;
     uint32_t rfd_addr, rbd_addr;
     uint16_t rx_status = 0;
@@ -1105,40 +1027,22 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     bool out_of_resources = false;
     size_t crc_size = i82596_get_crc_size(s);
 
-    DBG(printf("\n=== RX: size=%zu rx_status=%d ===\n", size, s->rx_status));
     DBG(PRINT_PKTHDR("[RX]", buf));
 
-    /* Step 1: Checks & balances */
-    if (!I596_FULL_DUPLEX && !s->throttle_state) {
-        DBG(printf("RX: Rejected (half-duplex, throttle off)\n"));
-        return size;
-    }
-
-    if (i82596_validate_receive_state(s, &size) < 0) {
+    if (i82596_validate_receive_state(s, &size, from_queue) < 0) {
         return -1;
     }
 
     bool passes_filter = i82596_check_packet_filter(s, buf, &is_broadcast);
 
     if (!i82596_monitor(s, buf, size, passes_filter) && (!passes_filter)) {
-        DBG(printf("RX: Handled by monitor mode\n"));
         return size;
     }
 
-    /* TODO: Welp, this is pointless will fix later */
-    if (I596_LOOPBACK) {
-        crc_valid = true;
-        frame_size = size;
-        DBG(printf("RX: Loopback mode - skipping CRC verification\n"));
-    } else {
-        crc_valid = true;
-        frame_size = size;
-    }
 
     rfd_addr = get_uint32(s->scb + 8);
 
     if (rfd_addr == 0 || rfd_addr == I596_NULL) {
-        DBG(printf("RX: No RFD available (RNR)\n"));
         i82596_update_rx_state(s, RX_NO_RESOURCES);
         s->resource_err++;
         set_uint16(s->scb, get_uint16(s->scb) | SCB_STATUS_RNR);
@@ -1150,15 +1054,17 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     i82596_rx_rfd_dump(s, rfd_addr, &rfd);
 
     s->current_rx_desc = rfd_addr;
+
+    if (rfd.status_bits & STAT_C) {
+        return -1;
+    }
+
     DBG(printf("RX: Using RFD=0x%08lx\n", (unsigned long)rfd_addr));
 
     /* 0: Simplified Mode 1: Flexible Mode */
     simplified_mode = !(rfd.command & CMD_FLEX);
 
     set_uint16(rfd_addr, STAT_B);
-
-    DBG(printf("RX: Mode=%s cmd=0x%04x\n",
-               simplified_mode ? "SIMPLIFIED" : "FLEXIBLE", rfd.command));
 
     if (frame_size < 14) {
         DBG(printf("RX: Frame too short (%zu bytes)\n", frame_size));
@@ -1170,12 +1076,11 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     }
 
     payload_size = frame_size;
-    do {    
+    do {
         if (simplified_mode && I596_LOOPBACK) {
             uint16_t rfd_size = rfd.size & 0x3FFF;
 
             if (rfd_size % 2 != 0) {
-                DBG(printf("RX: RFD size misaligned (%d)\n", rfd_size));
                 rx_status |= RX_LENGTH_ERRORS;
                 i82596_record_error(s, RX_LENGTH_ERRORS, false);
                 s->align_err++;
@@ -1184,7 +1089,6 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
             }
 
             if (payload_size > rfd_size) {
-                DBG(printf("RX: Payload truncated (%zu > %d)\n", payload_size, rfd_size));
                 rx_status |= RFD_STATUS_TRUNC;
                 payload_size = rfd_size;
                 packet_completed = !SAVE_BAD_FRAMES ? false : true;
@@ -1202,12 +1106,11 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
             size_t remaining_to_copy = payload_size - bytes_copied;
             if (rfd_size > 0 && remaining_to_copy > 0) {
                 size_t data_offset = 0x10;
+
                 rfd_frame_size = MIN(remaining_to_copy, rfd_size);
                 address_space_write(&address_space_memory, rfd_addr + data_offset,
                                   MEMTXATTRS_UNSPECIFIED, packet_data + bytes_copied, rfd_frame_size);
                 bytes_copied += rfd_frame_size;
-                DBG(printf("RX: Copied %zu bytes to RFD data area, total=%zu/%zu\n",
-                           rfd_frame_size, bytes_copied, payload_size));
             }
 
             if (bytes_copied < payload_size) {
@@ -1215,7 +1118,6 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                 rbd_addr = i82596_translate_address(s, rfd.rbd_addr, false);
 
                 if (rbd_addr == I596_NULL || rbd_addr == 0 || rbd_addr == 0xFFFFFFFF) {
-                    DBG(printf("RX: No RBD available in flexible mode - accepting partial frame in RFD\n"));
                     rx_status |= RFD_STATUS_TRUNC | RFD_STATUS_NOBUFS;
                     i82596_record_error(s, RFD_STATUS_NOBUFS, false);
                     packet_completed = true; /* Still complete the frame, driver will see error status */
@@ -1244,30 +1146,19 @@ ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                         DBG(printf("RX: Out of RBDs mid-frame\n"));
                         i82596_record_error(s, RFD_STATUS_NOBUFS, false);
                         rx_status |= RFD_STATUS_TRUNC | RFD_STATUS_NOBUFS;
-                        packet_completed = true; /* Complete with error status - don't go RNR */
+                        packet_completed = true;
                     }
 
                     if (bytes_copied < payload_size) {
                         DBG(printf("RX: Incomplete copy (%zu/%zu bytes)\n", bytes_copied, payload_size));
                         rx_status |= RFD_STATUS_TRUNC;
-                        packet_completed = true; /* Complete with truncation - driver will handle */
+                        packet_completed = true;
                     }
                 }
             }
         }
-        
-        if (bytes_copied >= payload_size) {
-            DBG(printf("RX: All data copied (%zu/%zu bytes)\n", bytes_copied, payload_size));
-            break;
-        }
-        
-        if (!packet_completed) {
-            DBG(printf("RX: Exiting loop due to error condition\n"));
-            break;
-        }
-        DBG(printf("RX: Single RFD processing complete\n"));
         break;
-        
+
     } while (bytes_copied < payload_size);
 
 rx_complete:
@@ -1313,31 +1204,13 @@ rx_complete:
 
     i82596_rx_desc_write(s, rfd_addr, &rfd, (simplified_mode || I596_LOOPBACK));
 
-    if (simplified_mode && I596_LOOPBACK) {
-        DBG(printf("RX LOOPBACK SIMPLIFIED: RFD after write:\n"));
-        i82596_rx_rfd_dump(s, rfd_addr, &rfd);
-    }
-
-    printf("RX: Updated RFD @0x%08lx status=0x%04x (C=%d OK=%d) bytes=%zu loopback=%d %s\n",
-           (unsigned long)rfd_addr, rfd.status_bits,
-           !!(rfd.status_bits & STAT_C),
-           !!(rfd.status_bits & STAT_OK),
-           bytes_copied, I596_LOOPBACK,
-           (packet_completed && crc_valid) ? "OK" : "ERR");
-
     if (rfd.command & CMD_SUSP) {
-        DBG(printf("RX: Suspend bit set - not advancing RFA\n"));
         i82596_update_rx_state(s, RX_SUSPENDED);
-        DBG(printf("=== RX: Complete (errors: CRC=%d align=%d res=%d) ===\n\n",
-                   s->crc_err, s->align_err, s->resource_err));
         return size;
     }
 
     if (rfd.command & CMD_EOL) {
-        DBG(printf("RX: End-of-list bit set - not advancing RFA\n"));
         i82596_update_rx_state(s, RX_SUSPENDED);
-        DBG(printf("=== RX: Complete (errors: CRC=%d align=%d res=%d) ===\n\n",
-                   s->crc_err, s->align_err, s->resource_err));
         return size;
     }
 
@@ -1345,17 +1218,47 @@ rx_complete:
         uint32_t next_rfd_addr = i82596_translate_address(s, rfd.link, false);
         if (next_rfd_addr != 0 && next_rfd_addr != I596_NULL) {
             set_uint32(s->scb + 8, next_rfd_addr);
-            DBG(printf("RX: Advanced RFA from 0x%08lx to 0x%08x\n",
-                       (unsigned long)rfd_addr, next_rfd_addr));
         }
 
         s->scb_status |= SCB_STATUS_FR;
         i82596_update_scb_irq(s, true);
-        DBG(printf("RX: RFD completed successfully\n"));
     }
     DBG(printf("=== RX: Complete (errors: CRC=%d align=%d res=%d) ===\n\n",
                s->crc_err, s->align_err, s->resource_err));
     return size;
+}
+
+ssize_t i82596_receive(NetClientState *nc, const uint8_t *buf, size_t size)
+{
+    I82596State *s = qemu_get_nic_opaque(nc);
+
+    if (!I596_FULL_DUPLEX && !s->throttle_state) {
+        if (s->queue_count < PACKET_QUEUE_SIZE) {
+            goto queue_packet;
+        }
+        trace_i82596_receive_suspended();
+        return size;
+    }
+
+    if (s->rx_status != RX_READY) {
+        if (s->queue_count >= PACKET_QUEUE_SIZE) {
+            trace_i82596_receive_queue_full();
+            s->over_err++;
+            set_uint32(s->scb + 22, s->over_err);
+            i82596_record_error(s, RX_OVER_ERRORS, false);
+            return size;
+        }
+queue_packet:
+        if (size <= PKT_BUF_SZ) {
+            memcpy(s->packet_queue[s->queue_head], buf, size);
+            s->packet_queue_len[s->queue_head] = size;
+            s->queue_head = (s->queue_head + 1) % PACKET_QUEUE_SIZE;
+            s->queue_count++;
+        }
+        return size;
+    }
+
+    return i82596_receive_packet(s, buf, size, false);
 }
 
 ssize_t i82596_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
@@ -1462,9 +1365,6 @@ static int i82596_csma_backoff(I82596State *s, int retry_count)
     slot_count = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) % (1 << backoff_factor);
     backoff_time = slot_count * CSMA_SLOT_TIME;
 
-    DBG(printf("CSMA/CD: Backing off for %d microseconds (retry %d, factor %d, slots 0-%d)\n",
-               backoff_time, retry_count, backoff_factor, (1 << backoff_factor) - 1));
-
     return backoff_time;
 }
 
@@ -1486,11 +1386,9 @@ static uint16_t i82596_calculate_crc16(const uint8_t *data, size_t len)
     return crc;
 }
 
-/* CRC FUNCTIONS */
 static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
 {
     if (len + 4 > PKT_BUF_SZ) {
-        DBG(printf("CRC: Buffer too small to append CRC\n"));
         return len;
     }
 
@@ -1498,7 +1396,6 @@ static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
         uint32_t crc = crc32(~0, buffer, len);
         crc = cpu_to_be32(crc);
         memcpy(&buffer[len], &crc, sizeof(crc));
-        DBG(printf("CRC: Appended CRC-32: 0x%08x\n", be32_to_cpu(crc)));
         return len + sizeof(crc);
     } else {
         uint16_t crc = i82596_calculate_crc16(buffer, len);
@@ -1507,36 +1404,6 @@ static size_t i82596_append_crc(I82596State *s, uint8_t *buffer, size_t len)
         return len + sizeof(crc);
     }
 }
-
-#if 0
-static bool i82596_verify_crc(I82596State *s, const uint8_t *data, size_t len)
-{
-    if (I596_CRC16_32) {
-        /* CRC-32 */
-        if (len < 4) {
-            return false;
-        }
-        uint32_t received_crc = be32_to_cpu(*(const uint32_t *)(data + len - 4));
-        uint32_t calculated_crc = crc32(~0, data, len - 4);
-        bool valid = (received_crc == calculated_crc);
-        DBG(printf("CRC: CRC-32 check: received=0x%08x calculated=0x%08x %s\n",
-                   received_crc, calculated_crc, valid ? "OK" : "FAIL"));
-        return valid;
-    } else {
-        /* CRC-16 */
-        if (len < 2) {
-            DBG(printf("CRC: Frame too short for CRC-16 verification\n"));
-            return false;
-        }
-        uint16_t received_crc = be16_to_cpu(*(const uint16_t *)(data + len - 2));
-        uint16_t calculated_crc = i82596_calculate_crc16(data, len - 2);
-        bool valid = (received_crc == calculated_crc);
-        DBG(printf("CRC: CRC-16 check: received=0x%04x calculated=0x%04x %s\n",
-                   received_crc, calculated_crc, valid ? "OK" : "FAIL"));
-        return valid;
-    }
-}
-#endif
 
 static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_flags,
                                      uint16_t collision_count)
@@ -1547,8 +1414,6 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
             s->collision_events++;
             s->total_collisions += collision_count;
             set_uint32(s->scb + 32, s->tx_collisions);
-            DBG(printf("TX Stats: Collisions=%d (this frame), total=%d, events=%d\n",
-                       collision_count, s->tx_collisions, s->collision_events));
         }
         if (error_flags) {
             i82596_record_error(s, error_flags, true);
@@ -1557,10 +1422,6 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
             s->tx_good_frames++;
             set_uint32(s->scb + 36, s->tx_good_frames);
         }
-
-        DBG(printf("TX Stats: good_frames=%d, aborted=%d\n",
-                   s->tx_good_frames, s->tx_aborted_errors));
-
     } else {
         s->total_frames++;
         set_uint32(s->scb + 40, s->total_frames);
@@ -1570,9 +1431,6 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
             s->total_good_frames++;
             set_uint32(s->scb + 44, s->total_good_frames);
         }
-
-        DBG(printf("RX Stats: total=%d, good=%d, errors=0x%04x\n",
-                   s->total_frames, s->total_good_frames, error_flags));
     }
 }
 
@@ -1580,32 +1438,22 @@ static void i82596_update_statistics(I82596State *s, bool is_tx, uint16_t error_
 static void i82596_bus_throttle_timer(void *opaque)
 {
     I82596State *s = opaque;
-    DBG(printf("Bus throttle timer fired, current state: %s\n",
-               s->throttle_state ? "ON" : "OFF"));
 
     if (s->throttle_state) {
         s->throttle_state = false;
-        DBG(printf("Switching bus to OFF state\n"));
         if (s->t_off > 0) {
             timer_mod(s->throttle_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       s->t_off * NANOSECONDS_PER_MICROSECOND);
-            DBG(printf("Scheduled OFF period for %d microseconds\n", s->t_off));
         } else {
             s->throttle_state = true;
-            DBG(printf("Zero OFF time, immediately switching back to ON\n"));
         }
     } else {
         s->throttle_state = true;
-        DBG(printf("Switching bus to ON state\n"));
-
         if (s->t_on > 0 && s->t_on != 0xFFFF) {
             timer_mod(s->throttle_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       s->t_on * NANOSECONDS_PER_MICROSECOND);
-            DBG(printf("Scheduled ON period for %d microseconds\n", s->t_on));
-        } else {
-            DBG(printf("Infinite ON time or zero, not scheduling next transition\n"));
         }
     }
 }
@@ -1617,14 +1465,11 @@ static void i82596_load_throttle_timers(I82596State *s, bool start_now)
     s->t_on = get_uint16(s->scb + 36);
     s->t_off = get_uint16(s->scb + 38);
 
-    DBG(printf("Load throttle: T-ON=%d, T-OFF=%d, start=%d\n",
-              s->t_on, s->t_off, start_now));
     bool values_changed = (s->t_on != previous_t_on || s->t_off != previous_t_off);
     if (start_now || (values_changed && s->throttle_timer)) {
         timer_del(s->throttle_timer);
         s->throttle_state = true;
         if (s->t_on > 0 && s->t_on != 0xFFFF && !I596_FULL_DUPLEX) {
-            DBG(printf("Starting throttle timer with T-ON=%d microseconds\n", s->t_on));
             timer_mod(s->throttle_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       s->t_on * NANOSECONDS_PER_MICROSECOND);
@@ -1635,6 +1480,7 @@ static void i82596_load_throttle_timers(I82596State *s, bool start_now)
 static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
 {
     memset(buffer, 0, DUMP_BUF_SZ);
+
     printf("This is the dump area function for i82596 QEMU side\n"
             "If you are seeing this message, please contact:\n"
             "Soumyajyotii Sarkar <soumyajyotisarkar23@gmail.com>\n"
@@ -1652,7 +1498,6 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
         write_uint16(offset + 2, value & 0xFFFF);
     }
 
-    /* ----------------- Configuration Bytes ------------------ */
     write_uint16(0x00, (s->config[5] << 8) | s->config[4]);
     write_uint16(0x02, (s->config[3] << 8) | s->config[2]);
     write_uint16(0x04, (s->config[9] << 8) | s->config[8]);
@@ -1660,7 +1505,6 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
     write_uint16(0x08, (s->config[13] << 8) | s->config[12]);
     write_uint16(0x0A, (s->config[11] << 8) | s->config[10]);
 
-    /* --------------- Individual Address (MAC) --------------- */
     buffer[0x0C] = s->conf.macaddr.a[0];
     buffer[0x0D] = s->conf.macaddr.a[1];
     buffer[0x10] = s->conf.macaddr.a[2];
@@ -1668,17 +1512,14 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
     buffer[0x12] = s->conf.macaddr.a[4];
     buffer[0x13] = s->conf.macaddr.a[5];
 
-    /* --------------- CRC and Status Values ----------------- */
     if (s->last_tx_len > 0) {
         uint32_t tx_crc = crc32(~0, s->tx_buffer, s->last_tx_len);
         write_uint16(0x14, tx_crc & 0xFFFF);
         write_uint16(0x16, tx_crc >> 16);
     }
 
-    /* -------------- Hash Table Values --------------------- */
     memcpy(&buffer[0x24], s->mult, sizeof(s->mult));
 
-    /* -------------- Status and Counters ------------------ */
     buffer[0xB0] = s->cu_status;
     buffer[0xB1] = s->rx_status;
 
@@ -1687,16 +1528,14 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
     write_uint32(0xBC, s->resource_err);
     write_uint32(0xC0, s->over_err);
 
-    /* -------------- Monitor Mode Counters ---------------- */
     write_uint32(0xC4, s->short_fr_error);
     write_uint32(0xC8, s->total_frames);
     write_uint32(0xCC, s->total_good_frames);
 
-    /* ----------------- Flag Array -------------------------- */
-    buffer[0xD0] = I596_PROMISC ? 1 : 0;          /* Promiscuous mode */
-    buffer[0xD1] = I596_BC_DISABLE ? 1 : 0;       /* Broadcast disabled */
-    buffer[0xD2] = I596_FULL_DUPLEX ? 1 : 0;      /* Full duplex mode */
-    buffer[0xD3] = I596_LOOPBACK;                 /* Loopback setting */
+    buffer[0xD0] = I596_PROMISC ? 1 : 0;
+    buffer[0xD1] = I596_BC_DISABLE ? 1 : 0;
+    buffer[0xD2] = I596_FULL_DUPLEX ? 1 : 0;
+    buffer[0xD3] = I596_LOOPBACK;
 
     uint8_t mc_count = 0;
     for (int i = 0; i < sizeof(s->mult); i++) {
@@ -1712,12 +1551,10 @@ static void i82596_init_dump_area(I82596State *s, uint8_t *buffer)
     buffer[0xD5] = I596_NOCRC_INS ? 1 : 0;
     buffer[0xD6] = I596_CRC16_32 ? 1 : 0;
 
-    /* ------------- Network and Bus Status ----------------- */
     write_uint16(0xD8, s->lnkst);
     buffer[0xDA] = I596_MONITOR_MODE;
     write_uint32(0xDC, s->collision_events);
 
-    /* ------------- Throttle Timers ----------------------- */
     write_uint16(0x110, s->t_on);
     write_uint16(0x112, s->t_off);
     write_uint16(0x114, s->throttle_state ? 0x0001 : 0x0000);
@@ -1730,7 +1567,6 @@ static void i82596_port_dump(I82596State *s, uint32_t dump_addr)
 {
     uint8_t dump_buffer[DUMP_BUF_SZ];
 
-    DBG(printf("i82596: PORT Dump command to address 0x%08x\n", dump_addr));
     i82596_init_dump_area(s, dump_buffer);
 
     address_space_write(&address_space_memory, dump_addr,
@@ -1739,7 +1575,6 @@ static void i82596_port_dump(I82596State *s, uint32_t dump_addr)
     set_uint32(dump_addr, 0xFFFF0000);
     s->scb_status |= SCB_STATUS_CX;
     s->send_irq = 1;
-    DBG(printf("i82596: PORT Dump command completed\n"));
 }
 
 static void i82596_command_dump(I82596State *s, uint32_t cmd_addr)
@@ -1780,23 +1615,12 @@ static void i82596_configure(I82596State *s, uint32_t addr)
                        MEMTXATTRS_UNSPECIFIED, s->config, byte_cnt);
 
     if (byte_cnt > 12) {
-        bool previous_duplex = I596_FULL_DUPLEX;
-        if (previous_duplex != I596_FULL_DUPLEX) {
-            DBG(printf("DUPLEX: Mode changed to %s duplex\n",
-                       I596_FULL_DUPLEX ? "FULL" : "HALF"));
-        }
-        s->config[12] &= 0x40; /* Preserve only duplex bit */
-
+        s->config[12] &= 0x40;
 
         if (byte_cnt > 11) {
             uint8_t monitor_mode = I596_MONITOR_MODE;
             s->config[11] &= ~0xC0; /* Clear bits 6-7 */
             s->config[11] |= (monitor_mode << 6); /* Set monitor mode */
-
-            DBG(printf("MONITOR: Mode set to %d (%s)\n", monitor_mode,
-                       monitor_mode == MONITOR_NORMAL ? "NORMAL" :
-                       monitor_mode == MONITOR_FILTERED ? "FILTERED" :
-                       monitor_mode == MONITOR_ALL ? "ALL" : "DISABLED"));
         }
     }
 
@@ -1851,17 +1675,14 @@ static void i82596_update_cu_status(I82596State *s, uint16_t cmd_status, bool ge
  */
 static void update_scb_status(I82596State *s)
 {
-    /* Update status word with CU state, RU state, and link status */
     s->scb_status = (s->scb_status & 0xf000)
         | (s->cu_status << 8) | (s->rx_status << 4) | (s->lnkst >> 8);
     set_uint16(s->scb, s->scb_status);
 
-    /* Update TX-related counters */
     set_uint32(s->scb + 28, s->tx_aborted_errors);
     set_uint32(s->scb + 32, s->tx_collisions);
     set_uint32(s->scb + 36, s->tx_good_frames);
 
-    /* Update RX-related counters */
     set_uint32(s->scb + 16, s->crc_err);
     set_uint32(s->scb + 18, s->align_err);
     set_uint32(s->scb + 20, s->resource_err);
@@ -1872,13 +1693,8 @@ static void update_scb_status(I82596State *s)
 
 static void command_loop(I82596State *s)
 {
-    DBG(printf("CMD_LOOP: Start - CU=%d cmd_p=0x%08x\n", s->cu_status, s->cmd_p));
-
-    /* Process commands while CU is active and valid command pointer exists */
     while (s->cu_status == CU_ACTIVE && s->cmd_p != I596_NULL && s->cmd_p != 0) {
         uint16_t status = get_uint16(s->cmd_p);
-
-        /* Skip already processed commands */
         if (status & (STAT_C | STAT_B)) {
             uint32_t next = get_uint32(s->cmd_p + 4);
             if (next == 0 || next == s->cmd_p) {
@@ -1890,22 +1706,11 @@ static void command_loop(I82596State *s)
             s->cmd_p = i82596_translate_address(s, next, false);
             continue;
         }
-
-        /* Mark command as busy */
         set_uint16(s->cmd_p, STAT_B);
-
-        /* Read command and link */
         uint16_t cmd = get_uint16(s->cmd_p + 2);
         uint32_t next_addr = get_uint32(s->cmd_p + 4);
-
-        DBG(printf("CMD_LOOP: Exec cmd=0x%04x type=%d at 0x%08x\n",
-                   cmd, cmd & CMD_MASK, s->cmd_p));
-
-        /* Translate next address */
         next_addr = (next_addr == 0) ? I596_NULL :
                     i82596_translate_address(s, next_addr, false);
-
-        /* Execute command based on type */
         switch (cmd & CMD_MASK) {
         case CmdNOp:
             break;
@@ -1930,18 +1735,16 @@ static void command_loop(I82596State *s)
         case CmdDiagnose:
             break;
         default:
-            DBG(printf("CMD_LOOP: Unknown command %d\n", cmd & CMD_MASK));
+            printf("CMD_LOOP: Unknown command %d\n", cmd & CMD_MASK);
             break;
         }
 
-        /* Set command complete status */
         status = get_uint16(s->cmd_p);
         if (!(status & STAT_C)) {
             set_uint16(s->cmd_p, STAT_C | STAT_OK);
         }
 
 skip_status_update:
-        /* Handle command flags */
         if (cmd & CMD_INTR) {
             s->scb_status |= SCB_STATUS_CX;
             s->send_irq = 1;
@@ -1953,7 +1756,6 @@ skip_status_update:
             s->cu_status = CU_SUSPENDED;
             s->scb_status |= SCB_STATUS_CNA;
             stop = true;
-            DBG(printf("CMD_LOOP: Suspend\n"));
         }
 
         if (cmd & CMD_EOL) {
@@ -1961,15 +1763,12 @@ skip_status_update:
             s->cu_status = CU_IDLE;
             s->scb_status |= SCB_STATUS_CNA;
             stop = true;
-            DBG(printf("CMD_LOOP: End of list\n"));
         } else if (!stop) {
-            /* Advance to next command */
             if (next_addr == 0 || next_addr == I596_NULL || next_addr == s->cmd_p) {
                 s->cmd_p = I596_NULL;
                 s->cu_status = CU_IDLE;
                 s->scb_status |= SCB_STATUS_CNA;
                 stop = true;
-                DBG(printf("CMD_LOOP: Invalid next\n"));
             } else {
                 s->cmd_p = next_addr;
             }
@@ -1982,15 +1781,12 @@ skip_status_update:
         }
     }
 
-    /* Final status update */
     update_scb_status(s);
 
-    /* Flush RX queue if ready */
     if (s->rx_status == RX_READY && s->nic) {
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
     }
 
-    DBG(printf("CMD_LOOP: End - CU=%d cmd_p=0x%08x\n", s->cu_status, s->cmd_p));
 }
 
 static void examine_scb(I82596State *s)
@@ -1999,11 +1795,14 @@ static void examine_scb(I82596State *s)
     uint8_t cuc = (command >> 8) & 0x7;
     uint8_t ruc = (command >> 4) & 0x7;
 
-    DBG(printf("SCB: command=0x%04x CUC=%d RUC=%d\n", command, cuc, ruc));
+    trace_i82596_scb_command(cuc, ruc);
 
-    /* Clear command word and acknowledge interrupts */
     set_uint16(s->scb + 2, 0);
     s->scb_status &= ~(command & SCB_ACK_MASK);
+
+    if (command & SCB_STATUS_RNR) {
+        s->rnr_signaled = false;
+    }
 
     /* Process Command Unit (CU) commands */
     switch (cuc) {
@@ -2014,39 +1813,33 @@ static void examine_scb(I82596State *s)
         uint32_t cmd_ptr = get_uint32(s->scb + 4);
         s->cmd_p = i82596_translate_address(s, cmd_ptr, false);
         s->cu_status = CU_ACTIVE;
-        DBG(printf("SCB: CU Start at 0x%08x\n", s->cmd_p));
         break;
     }
 
     case SCB_CUC_RESUME:
         if (s->cu_status == CU_SUSPENDED) {
             s->cu_status = CU_ACTIVE;
-            DBG(printf("SCB: CU Resume\n"));
         }
         break;
 
     case SCB_CUC_SUSPEND:
         s->cu_status = CU_SUSPENDED;
         s->scb_status |= SCB_STATUS_CNA;
-        DBG(printf("SCB: CU Suspend\n"));
         break;
 
     case SCB_CUC_ABORT:
         s->cu_status = CU_IDLE;
         s->scb_status |= SCB_STATUS_CNA;
-        DBG(printf("SCB: CU Abort\n"));
         break;
 
     case SCB_CUC_LOAD_THROTTLE: {
         bool external_trigger = (s->sysbus & I82586_MODE);
         i82596_load_throttle_timers(s, !external_trigger);
-        DBG(printf("SCB: Load throttle timers (external=%d)\n", external_trigger));
         break;
     }
 
     case SCB_CUC_LOAD_START:
         i82596_load_throttle_timers(s, true);
-        DBG(printf("SCB: Load and start throttle timers\n"));
         break;
     }
 
@@ -2059,12 +1852,9 @@ static void examine_scb(I82596State *s)
         uint32_t rfd_log = get_uint32(s->scb + 8);
         hwaddr rfd = i82596_translate_address(s, rfd_log, false);
 
-        DBG(printf("SCB: RU Start - RFA=0x%08x\n", rfd_log));
-
         if (rfd == 0 || rfd == I596_NULL) {
             s->rx_status = RX_NO_RESOURCES;
             s->scb_status |= SCB_STATUS_RNR;
-            DBG(printf("SCB: RU Start failed - invalid RFA\n"));
             break;
         }
 
@@ -2085,7 +1875,6 @@ static void examine_scb(I82596State *s)
                     first_usable_rfd = test_rfd_addr;
                     first_usable_rfd_log = test_rfd_log;
                     found = true;
-                    DBG(printf("SCB: Found usable RFD at 0x%08x\n", test_rfd_log));
                     break;
                 }
             }
@@ -2097,51 +1886,51 @@ static void examine_scb(I82596State *s)
         if (found) {
             s->current_rx_desc = first_usable_rfd;
             s->last_good_rfa = first_usable_rfd_log;
-            s->rx_status = RX_READY;
+            i82596_update_rx_state(s, RX_READY);
 
-            /* Update RFA pointer if needed */
             if (first_usable_rfd != rfd) {
                 set_uint32(s->scb + 8, first_usable_rfd_log);
             }
 
+            if (s->queue_count > 0) {
+                trace_i82596_flush_queue(s->queue_count);
+                i82596_flush_packet_queue(s);
+            }
+
             qemu_flush_queued_packets(qemu_get_queue(s->nic));
-            DBG(printf("SCB: RU Ready - RFD=0x%08x\n", first_usable_rfd_log));
         } else {
             s->rx_status = RX_NO_RESOURCES;
             s->scb_status |= SCB_STATUS_RNR;
-            DBG(printf("SCB: RU Start failed - no usable RFD\n"));
         }
         break;
     }
 
     case SCB_RUC_RESUME:
         if (s->rx_status == RX_SUSPENDED) {
-            s->rx_status = RX_READY;
+            i82596_update_rx_state(s, RX_READY);
+            if (s->queue_count > 0) {
+                trace_i82596_flush_queue(s->queue_count);
+                i82596_flush_packet_queue(s);
+            }
             qemu_flush_queued_packets(qemu_get_queue(s->nic));
-            DBG(printf("SCB: RU Resume\n"));
         }
         break;
 
     case SCB_RUC_SUSPEND:
         s->rx_status = RX_SUSPENDED;
         s->scb_status |= SCB_STATUS_RNR;
-        DBG(printf("SCB: RU Suspend\n"));
         break;
 
     case SCB_RUC_ABORT:
         s->rx_status = RX_IDLE;
         s->scb_status |= SCB_STATUS_RNR;
-        DBG(printf("SCB: RU Abort\n"));
         break;
     }
 
-    /* Handle reset command */
     if (command & 0x80) {
-        DBG(printf("SCB: Reset command\n"));
         i82596_s_reset(s);
         return;
     }
-    /* Execute command loop if CU is active */
     if (s->cu_status == CU_ACTIVE) {
         if (s->cmd_p == I596_NULL) {
             s->cmd_p = get_uint32(s->scb + 4);
@@ -2205,7 +1994,8 @@ static void signal_ca(I82596State *s)
 
 static void i82596_self_test(I82596State *s, uint32_t val)
 {
-    /* The documentation for the self test is a bit unclear,
+    /*
+     * The documentation for the self test is a bit unclear,
      * we are currently doing this and it seems to work.
      */
     set_uint32(val, 0xFFC00000);
@@ -2218,7 +2008,9 @@ static void i82596_self_test(I82596State *s, uint32_t val)
     update_scb_status(s);
 }
 
-/* LASI specific interfaces */
+/*
+ * LASI specific interfaces
+ */
 static uint32_t bit_align_16(uint32_t val)
 {
     return val & ~0x0f;
@@ -2245,7 +2037,7 @@ void i82596_ioport_writew(void *opaque, uint32_t addr, uint32_t val)
         s->scp = bit_align_16(val);
         break;
     case PORT_ALTDUMP:
-        printf("Dumping statistics to memory at %08x\n", val);
+        trace_i82596_dump(val);
         i82596_port_dump(s, bit_align_16(val));
         break;
     case PORT_CA:
@@ -2268,7 +2060,7 @@ void i82596_poll(NetClientState *nc, bool enable)
 
     if (s->rx_status == RX_NO_RESOURCES) {
         if (s->cmd_p != I596_NULL) {
-            s->rx_status = RX_READY;
+            i82596_update_rx_state(s, RX_READY);
             update_scb_status(s);
         }
     }
@@ -2303,17 +2095,83 @@ const VMStateDescription vmstate_i82596 = {
         VMSTATE_BUFFER(mult, I82596State),
         VMSTATE_BUFFER(config, I82596State),
         VMSTATE_BUFFER(tx_buffer, I82596State),
+        VMSTATE_UINT32(tx_retry_addr, I82596State),
+        VMSTATE_INT32(tx_retry_count, I82596State),
+        VMSTATE_UINT32(tx_good_frames, I82596State),
+        VMSTATE_UINT32(tx_collisions, I82596State),
+        VMSTATE_UINT32(tx_aborted_errors, I82596State),
+        VMSTATE_UINT32(last_tx_len, I82596State),
+        VMSTATE_UINT32(collision_events, I82596State),
+        VMSTATE_UINT32(total_collisions, I82596State),
+        VMSTATE_UINT32(crc_err, I82596State),
+        VMSTATE_UINT32(align_err, I82596State),
+        VMSTATE_UINT32(resource_err, I82596State),
+        VMSTATE_UINT32(over_err, I82596State),
+        VMSTATE_UINT32(rcvdt_err, I82596State),
+        VMSTATE_UINT32(short_fr_error, I82596State),
+        VMSTATE_UINT32(total_frames, I82596State),
+        VMSTATE_UINT32(total_good_frames, I82596State),
+        VMSTATE_BUFFER(rx_buffer, I82596State),
+        VMSTATE_UINT16(tx_frame_len, I82596State),
+        VMSTATE_UINT16(rx_frame_len, I82596State),
+        VMSTATE_UINT64(current_tx_desc, I82596State),
+        VMSTATE_UINT64(current_rx_desc, I82596State),
+        VMSTATE_UINT32(last_good_rfa, I82596State),
+        VMSTATE_INT32(queue_head, I82596State),
+        VMSTATE_INT32(queue_tail, I82596State),
+        VMSTATE_INT32(queue_count, I82596State),
+        VMSTATE_BOOL(rnr_signaled, I82596State),
+        VMSTATE_BOOL(flushing_queue, I82596State),
         VMSTATE_END_OF_LIST()
     }
 };
 
+static int i82596_flush_packet_queue(I82596State *s)
+{
+    if (s->flushing_queue) {
+        return 0;
+    }
+
+    s->flushing_queue = true;
+    int processed = 0;
+
+    while (s->queue_count > 0) {
+        int tail = s->queue_tail;
+        size_t len = s->packet_queue_len[tail];
+
+        ssize_t ret = i82596_receive_packet(s, s->packet_queue[tail], len, true);
+
+        if (ret < 0) {
+            break;
+        }
+
+        s->queue_tail = (s->queue_tail + 1) % PACKET_QUEUE_SIZE;
+        s->queue_count--;
+        processed++;
+    }
+
+    s->flushing_queue = false;
+    trace_i82596_flush_queue(processed);
+
+    return processed;
+}
+
 static void i82596_flush_queue_timer(void *opaque)
 {
     I82596State *s = opaque;
-    DBG(printf("RX: Timer callback fired! rx_status=%d\n", s->rx_status));
-    if (s->rx_status == RX_READY) {
-        DBG(printf("RX: Calling qemu_flush_queued_packets to retry queued packets\n"));
+
+    if (s->queue_count == 0) {
+        return;
+    }
+
+    int processed = i82596_flush_packet_queue(s);
+
+    if (processed > 0 && s->rx_status == RX_READY) {
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    }
+
+    if (s->queue_count > 0 && s->rx_status != RX_READY) {
+        timer_mod(s->flush_queue_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 50000);
     }
 }
 

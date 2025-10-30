@@ -6,15 +6,15 @@
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
 
-#define PACKET_QUEUE_SIZE 8
+#define PACKET_QUEUE_SIZE 64
 #define RX_RING_SIZE    16
 #define PKT_BUF_SZ      1536
 
-#define PORT_RESET              0x00    /* reset 82596 */
-#define PORT_SELFTEST           0x01    /* selftest */
-#define PORT_ALTSCP             0x02    /* alternate SCB address */
-#define PORT_ALTDUMP            0x03    /* Alternate DUMP address */
-#define PORT_CA                 0x10    /* QEMU-internal CA signal */
+#define PORT_RESET              0x00
+#define PORT_SELFTEST           0x01
+#define PORT_ALTSCP             0x02
+#define PORT_ALTDUMP            0x03
+#define PORT_CA                 0x10
 
 typedef struct I82596State_st I82596State;
 
@@ -25,17 +25,17 @@ struct I82596State_st {
     NICState *nic;
     NICConf conf;
     QEMUTimer *flush_queue_timer;
-    uint8_t mode;                   /* Determine the mode of 82596 */
+    uint8_t mode;
 
     QEMUTimer *throttle_timer;
     uint16_t t_on;
     uint16_t t_off;
     bool throttle_state;
 
-    hwaddr scp;                     /* pointer to SCP */
-    uint32_t iscp;                  /* pointer to ISCP */
+    hwaddr scp;
+    uint32_t iscp;
     uint8_t sysbus;
-    uint32_t scb;                   /* SCB */
+    uint32_t scb;
     uint32_t scb_base;
     uint16_t scb_status;
     uint8_t cu_status, rx_status;
@@ -44,23 +44,20 @@ struct I82596State_st {
     uint32_t collision_events;
     uint32_t total_collisions;
 
-    /* TX retry mechanism fields */
-    uint32_t tx_retry_addr;        /* Address of command being retried */
-    int tx_retry_count;            /* Current retry count for TX */
-    uint32_t tx_good_frames;       /* Successfully transmitted frames */
-    uint32_t tx_collisions;        /* Total collision count */
-    uint32_t tx_aborted_errors;    /* Aborted TX due to excessive collisions */
+    uint32_t tx_retry_addr;
+    int tx_retry_count;
+    uint32_t tx_good_frames;
+    uint32_t tx_collisions;
+    uint32_t tx_aborted_errors;
     
-    uint32_t cmd_p;                 /* addr of current command */
+    uint32_t cmd_p;
     int ca;
     int ca_active;
     int send_irq;
     
-    /* Hash register (multicast mask array, multiple individual addresses). */
     uint8_t mult[8];
-    uint8_t config[14];             /* config bytes from CONFIGURE command */
+    uint8_t config[14];
 
-    /* Statistical Counters */
     uint32_t crc_err;
     uint32_t align_err;
     uint32_t resource_err;
@@ -80,9 +77,11 @@ struct I82596State_st {
     uint32_t last_good_rfa;
     uint8_t packet_queue[PACKET_QUEUE_SIZE][PKT_BUF_SZ];
     size_t packet_queue_len[PACKET_QUEUE_SIZE];
-    int queue_head;  /* Next slot to write */
-    int queue_tail;  /* Next slot to read */
-    int queue_count; /* Number of packets in queue */
+    int queue_head;
+    int queue_tail;
+    int queue_count;
+    bool rnr_signaled;
+    bool flushing_queue;
 };
 
 void i82596_h_reset(void *opaque);
