@@ -41,6 +41,10 @@
 #include "qemu/module.h"
 #include "trace.h"
 #include "qom/object.h"
+#include "hw/core/cpu.h"
+#include "exec/translation-block.h"
+#include "exec/cpu-common.h"
+#include "exec/cputlb.h"
 
 #define NCR710_MAX_DEVS 7
 
@@ -572,23 +576,40 @@ static inline void ncr710_dma_read(NCR710State *s, uint32_t addr,
                                    void *buf, uint32_t len)
 {
     if (!s->as) {
+        fprintf(stderr, "NCR710 ERROR: DMA read with NULL address space!\n");
         return;
     }
-    address_space_read(s->as, addr, MEMTXATTRS_UNSPECIFIED, buf, len);
-    NCR710_DPRINTF("DMA Read %d bytes from %08x: ", len, addr);
-    for (int i = 0; i < len && i < 16; i++) {
-        NCR710_DPRINTF("%02x ", ((uint8_t *)buf)[i]);
-    }
-    NCR710_DPRINTF("\n");
+    
+    /* Use dma_memory_read which includes smp_mb() barrier for cache coherency */
+    dma_memory_read(s->as, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
 }
 
 static inline void ncr710_dma_write(NCR710State *s, uint32_t addr,
                                     const void *buf, uint32_t len)
 {
     if (!s->as) {
+        fprintf(stderr, "NCR710 ERROR: DMA write with NULL address space!\n");
         return;
     }
-    address_space_write(s->as, addr, MEMTXATTRS_UNSPECIFIED, buf, len);
+    dma_memory_write(s->as, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
+    /* 
+     * HACKISH WORKAROUND for PA-RISC non-coherent data caches:
+     * After DMA writes to memory, flush TLB for ALL CPUs to force re-reading from memory.
+     */
+    CPUState *cpu;
+    CPU_FOREACH(cpu) {
+        tb_invalidate_phys_range(cpu, addr, addr + len);
+        #define HPPA_PAGE_SIZE 4096
+        #define HPPA_PAGE_MASK (~(HPPA_PAGE_SIZE - 1))
+        
+        hwaddr page_addr = addr & HPPA_PAGE_MASK;
+        hwaddr end_addr = (addr + len + HPPA_PAGE_SIZE - 1) & HPPA_PAGE_MASK;
+        
+        while (page_addr < end_addr) {
+            tlb_flush_page(cpu, page_addr);
+            page_addr += HPPA_PAGE_SIZE;
+        }
+    }
 }
 
 static void ncr710_stop_script(NCR710State *s)
@@ -711,7 +732,6 @@ static void ncr710_do_dma(NCR710State *s, int out)
     }
 
     addr = s->dnad;
-
     s->dnad += count;
     s->dbc -= count;
     if (s->current->dma_buf == NULL) {
