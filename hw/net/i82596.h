@@ -82,6 +82,11 @@ struct I82596State_st {
     int queue_count;
     bool rnr_signaled;
     bool flushing_queue;
+
+    QEMUTimer *arp_timer;
+    bool arp_reply_pending;
+    uint8_t arp_reply_buf[PKT_BUF_SZ];
+    size_t arp_reply_len;
 };
 
 void i82596_h_reset(void *opaque);
