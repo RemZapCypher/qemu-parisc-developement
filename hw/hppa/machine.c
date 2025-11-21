@@ -50,6 +50,8 @@ struct HppaMachineState {
 #define HPA_POWER_BUTTON        (FIRMWARE_END - 0x10)
 static hwaddr soft_power_reg;
 
+#define enable_lasi_lan()       1
+
 static DeviceState *lasi_dev;
 
 static void hppa_powerdown_req(Notifier *n, void *opaque)
@@ -587,14 +589,20 @@ static void machine_HP_715_init(MachineState *machine)
     }
 
     /* LASI i82596 network */
+    fprintf(stderr, "DEBUG: About to create NIC device, enable_lasi_lan=%d\n", enable_lasi_lan());
     dev = qemu_create_nic_device(TYPE_LASI_82596, true, "lasi");
+    fprintf(stderr, "DEBUG: qemu_create_nic_device returned: %s\n", dev ? "device" : "NULL");
     if (dev) {
+        fprintf(stderr, "DEBUG: Realizing LASI 82596 device\n");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                            qdev_get_gpio_in(lasi_dev, LASI_IRQ_LAN_HPA));
         memory_region_add_subregion(addr_space,
                                     translate(NULL, LASI_HPA_715 + LASI_LAN),
                                     sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+        fprintf(stderr, "DEBUG: LASI 82596 device initialization complete\n");
+    } else {
+        fprintf(stderr, "DEBUG: Device creation failed or disabled\n");
     }
 
     /* Add NICs, graphics & load firmware */

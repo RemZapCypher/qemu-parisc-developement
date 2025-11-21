@@ -289,6 +289,12 @@ static void i82596_cleanup(I82596State *s)
     if (s->flush_queue_timer) {
         timer_del(s->flush_queue_timer);
     }
+    if (s->arp_timer) {
+        timer_del(s->arp_timer);
+    }
+    if (s->rfd_poll_timer) {
+        timer_del(s->rfd_poll_timer);
+    }
 }
 
 static void i82596_s_reset(I82596State *s)
@@ -329,6 +335,11 @@ static void i82596_s_reset(I82596State *s)
     s->queue_head = 0;
     s->queue_tail = 0;
     s->queue_count = 0;
+
+    /* RFD polling state */
+    s->last_rfd_status_bits = 0;
+    s->last_rfd_actual_count = 0;
+    s->last_rfd_rbd_addr = 0;
 
     s->t_on = 0xFFFF;
     s->t_off = 0;
@@ -2683,8 +2694,13 @@ void i82596_common_init(DeviceState *dev, I82596State *s, NetClientInfo *info)
                                     i82596_bus_throttle_timer, s);
         s->arp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                     i82596_arp_reply_timer, s);
+        s->rfd_poll_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    NULL, s);
     }
 
     s->lnkst = 0x8000; /* initial link state: up */
     s->arp_reply_pending = false;
+    s->last_rfd_status_bits = 0;
+    s->last_rfd_actual_count = 0;
+    s->last_rfd_rbd_addr = 0;
 }

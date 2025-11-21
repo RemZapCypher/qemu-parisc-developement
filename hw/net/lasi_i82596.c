@@ -27,27 +27,34 @@
 #define PA_CHANNEL_ATTENTION    8
 #define PA_GET_MACADDR          12
 
-#define SWAP32(x)   (((uint32_t)(x) << 16) | ((((uint32_t)(x))) >> 16))
+#define PORT_BYTEMASK           0x0f
 
 static void lasi_82596_mem_write(void *opaque, hwaddr addr,
                             uint64_t val, unsigned size)
 {
     SysBusI82596State *d = opaque;
 
+    fprintf(stderr, "LASI 82596 WRITE: addr=0x%lx size=%u val=0x%lx\n", addr, size, val);
     trace_lasi_82596_mem_writew(addr, val);
     switch (addr) {
     case PA_I82596_RESET:
         i82596_h_reset(&d->state);
         break;
-    case PA_CPU_PORT_L_ACCESS:
-        d->val_index++;
+    case PA_CPU_PORT_L_ACCESS: {
+        uint16_t wval = val & 0xFFFF;
         if (d->val_index == 0) {
-            uint32_t v = d->last_val | (val << 16);
-            v = v & ~0xff;
-            i82596_ioport_writew(&d->state, d->last_val & 0xff, v);
+            d->last_val = wval;
+            d->val_index = 1;
+        } else {
+            uint32_t full_val = (wval << 16) | d->last_val;
+            full_val &= ~PORT_BYTEMASK;
+            uint8_t selector = d->last_val & PORT_BYTEMASK;
+
+            i82596_ioport_writew(&d->state, selector, full_val);
+            d->val_index = 0;
         }
-        d->last_val = val;
         break;
+    }
     case PA_CHANNEL_ATTENTION:
         i82596_ioport_writew(&d->state, PORT_CA, val);
         break;
@@ -74,6 +81,7 @@ static uint64_t lasi_82596_mem_read(void *opaque, hwaddr addr,
     } else {
         val = i82596_ioport_readw(&d->state, addr);
     }
+    fprintf(stderr, "LASI 82596 READ: addr=0x%lx size=%u val=0x%x\n", addr, size, val);
     trace_lasi_82596_mem_readw(addr, val);
     return val;
 }
@@ -83,7 +91,7 @@ static const MemoryRegionOps lasi_82596_mem_ops = {
     .write = lasi_82596_mem_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
     .impl = {
@@ -118,13 +126,21 @@ static void lasi_82596_realize(DeviceState *dev, Error **errp)
     SysBusI82596State *d = SYSBUS_I82596(dev);
     I82596State *s = &d->state;
 
+    fprintf(stderr, "LASI 82596: realize() called\n");
+    
     memory_region_init_io(&s->mmio, OBJECT(d), &lasi_82596_mem_ops, d,
-                "lasi_82596-mmio", PA_GET_MACADDR + 4);
+                "lasi_82596-mmio", 0x20);
 
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->mmio);
 
     i82596_common_init(dev, s, &net_lasi_82596_info);
+    
+    fprintf(stderr, "LASI 82596: calling i82596_h_reset()\n");
+    /* Initialize device state */
+    i82596_h_reset(s);
+    
+    fprintf(stderr, "LASI 82596: realize() complete\n");
 }
 
 static void lasi_82596_reset(DeviceState *dev)
