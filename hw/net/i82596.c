@@ -102,6 +102,13 @@
 #define SCB_RUC_SUSPEND        0x03
 #define SCB_RUC_ABORT          0x04
 
+#define ENABLE_DEBUG 1
+#if defined(ENABLE_DEBUG)
+#define DBG(x)          x
+#else
+#define DBG(x)          do { } while (0)
+#endif
+
 /* SCB statuses - Command Unit (CU) */
 #define CU_IDLE         0
 #define CU_SUSPENDED    1
@@ -2501,6 +2508,7 @@ static void examine_scb(I82596State *s)
 
 static void signal_ca(I82596State *s)
 {
+    DBG(printf("signal_ca() called: scp=0x%08lx ca_active=%d ca=%d\n", (unsigned long)s->scp, s->ca_active, s->ca));
     if (s->scp) {
         /* CA after reset -> initialize with new SCP */
         s->sysbus = get_byte(s->scp + 3);
@@ -2511,8 +2519,8 @@ static void signal_ca(I82596State *s)
 
         s->scb_base = (s->mode == I82596_MODE_LINEAR) ? 0 : get_uint32(s->iscp + 8);
         s->scb = i82596_translate_address(s, s->scb, false);
-        DBG(printf("CA: Initialization - SCB=0x%08x, mode=%d, base=0x%08x\n",
-                   s->scb, s->mode, s->scb_base));
+        DBG(printf("CA: Initialization - SCB=0x%08x, mode=%d, base=0x%08x sysbus=0x%02x\n",
+                   s->scb, s->mode, s->scb_base, s->sysbus));
 
         /*
          * Complete initialization sequence:
@@ -2526,17 +2534,20 @@ static void signal_ca(I82596State *s)
         update_scb_status(s);
         set_uint16(s->scb + 2, 0);
         s->scp = 0;
+        DBG(printf("CA: Init complete, triggering interrupt\n"));
         qemu_set_irq(s->irq, 1);
         return;
     }
 
     if (s->ca_active) {
+        DBG(printf("signal_ca() nested call, incrementing ca counter\n"));
         s->ca++;
         return;
     }
     s->ca_active = 1;
     s->ca++;
 
+    DBG(printf("signal_ca() processing examine_scb, ca=%d\n", s->ca));
     while (s->ca > 0) {
         s->ca--;
         examine_scb(s);
@@ -2545,6 +2556,7 @@ static void signal_ca(I82596State *s)
     s->ca_active = 0;
 
     if (s->send_irq) {
+        DBG(printf("signal_ca() triggering pending interrupt\n"));
         s->send_irq = 0;
         qemu_set_irq(s->irq, 1);
     }
