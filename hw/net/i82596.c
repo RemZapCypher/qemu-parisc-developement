@@ -49,14 +49,6 @@
 #include "i82596.h"
 #include <zlib.h> /* for crc32 */
 
-#define ENABLE_DEBUG    1
-
-#if defined(ENABLE_DEBUG)
-#define DBG(x)          x
-#else
-#define DBG(x)          do { } while (0)
-#endif
-
 #define USE_TIMER       1
 
 #define MAX_MC_CNT      64
@@ -102,7 +94,7 @@
 #define SCB_RUC_SUSPEND        0x03
 #define SCB_RUC_ABORT          0x04
 
-#define ENABLE_DEBUG 1
+#define ENABLE_DEBUG 0
 #if defined(ENABLE_DEBUG)
 #define DBG(x)          x
 #else
