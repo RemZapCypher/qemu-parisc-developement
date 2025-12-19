@@ -596,7 +596,7 @@ static void ncr710_update_irq(NCR710State *s)
 {
     int level = 0;
 
-    if (s->dstat) {
+    if (s->dstat & ~NCR710_DSTAT_DFE) {
         if (s->dstat & s->dien) {
             level = 1;
         }
@@ -983,6 +983,7 @@ static void ncr710_do_status(NCR710State *s)
     ncr710_set_phase(s, PHASE_MI);
     s->msg_action = NCR710_MSG_ACTION_DISCONNECT;
     ncr710_add_msg_byte(s, 0); /* COMMAND COMPLETE */
+    s->command_complete = NCR710_CMD_COMPLETE;
 }
 
 static void ncr710_do_msgin(NCR710State *s)
@@ -1027,7 +1028,7 @@ static void ncr710_do_msgin(NCR710State *s)
         ncr710_set_phase(s, PHASE_CO);
         break;
     case NCR710_MSG_ACTION_DISCONNECT:
-        ncr710_disconnect(s);
+        s->sstat2 &= ~PHASE_MASK;
         break;
     case NCR710_MSG_ACTION_DATA_OUT:
         ncr710_set_phase(s, PHASE_DO);
@@ -1343,8 +1344,8 @@ again:
             offset = sextract32(addr, 0, 24);
             ncr710_dma_read(s, s->dsa + offset, buf, 8);
             /* byte count is stored in bits 0:23 only */
-            s->dbc = cpu_to_le32(buf[0]) & 0xffffff;
-            addr = cpu_to_le32(buf[1]);
+            s->dbc = be32_to_cpu(buf[0]) & 0xffffff;
+            addr = be32_to_cpu(buf[1]);
         }
         /* Check phase match for block move instructions */
         if ((s->sstat2 & PHASE_MASK) != ((insn >> 24) & 7)) {
@@ -1409,11 +1410,28 @@ again:
                         s->dsp = s->dnad;
                         break;
                     }
-                } else if (!scsi_device_find(&s->bus, 0, idbitstonum(id),
-                                             0)) {
-                    ncr710_bad_selection(s, id);
-                    break;
                 } else {
+                    bool device_exists = false;
+                    if (insn & (1 << 24)) {
+                        /* ATN=1: Check if any LUN exists for this target */
+                        for (int lun = 0; lun < 8; lun++) {
+                            SCSIDevice *dev = scsi_device_find(&s->bus, 0, idbitstonum(id), lun);
+                            if (dev) {
+                                device_exists = true;
+                                break;
+                            }
+                        }
+                    } else {
+                        /* ATN=0: Check specific LUN (usually 0) */
+                        SCSIDevice *dev = scsi_device_find(&s->bus, 0, idbitstonum(id), 0);
+                        device_exists = dev != NULL;
+                    }
+
+                    if (!device_exists) {
+                        ncr710_bad_selection(s, id);
+                        break;
+                    }
+
                     /*
                      * ??? Linux drivers compain when this is set. Maybe
                      * it only applies in low-level mode (unimplemented).
@@ -1431,13 +1449,10 @@ again:
                 }
                 break;
             case 1: /* Disconnect */
-
                 if (s->command_complete != NCR710_CMD_PENDING) {
                     s->scntl1 &= ~NCR710_SCNTL1_CON;
                     s->istat &= ~NCR710_ISTAT_CON;
-                    if (s->waiting == NCR710_WAIT_RESELECT) {
-                        s->waiting = NCR710_WAIT_NONE;
-                    }
+                    s->waiting = NCR710_WAIT_NONE;
                 } else {
                     if (s->current) {
                         s->current->resume_offset = s->dsp;
@@ -1802,14 +1817,9 @@ static uint8_t ncr710_reg_readb(NCR710State *s, int offset)
         return ret;
     case NCR710_SSTAT0_REG: /* SSTAT0 */
         ret = s->sstat0;
-        if (s->sstat0 != 0 && !(s->sstat0 & NCR710_SSTAT0_STO)) {
-            s->sstat0 = 0;
-            s->istat &= ~NCR710_ISTAT_SIP;
-            ncr710_update_irq(s);
-            if (s->sbcl != 0) {
-                s->sbcl = 0;
-            }
-        }
+        s->sstat0 = 0;
+        s->istat &= ~NCR710_ISTAT_SIP;
+        ncr710_update_irq(s);
         break;
     case NCR710_SSTAT1_REG: /* SSTAT1 */
         ret = s->sstat0;
@@ -2124,6 +2134,9 @@ static void ncr710_reg_writeb(NCR710State *s, int offset, uint8_t val)
         if (val & 0x04) {
             ncr710_scsi_fifo_init(&s->scsi_fifo);
             s->dstat |= NCR710_DSTAT_DFE;
+            s->ctest1 |= 0xF0;
+        } else {
+            s->ctest1 &= ~0xF0;
         }
         break;
     case NCR710_LCRC_REG: /* LCRC */
