@@ -366,6 +366,7 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
 {
     int dx, dy, dz, pan, l;
     int raw_dz, raw_pan;
+    int wheel_divisor, pan_divisor;
     int index;
     HIDPointerEvent *e;
 
@@ -396,15 +397,45 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
     raw_pan = pan;
 
     if (hs->kind == HID_MOUSE && hs->protocol != 0) {
-        if (hs->ptr.wheel_multiplier == 1) {
-            dz /= 4;
+        switch (hs->ptr.wheel_multiplier & 0x03) {
+        case 0:
+            wheel_divisor = 1;
+            break;
+        case 1:
+            wheel_divisor = 4;
+            break;
+        case 2:
+            wheel_divisor = 8;
+            break;
+        default:
+            wheel_divisor = 16;
+            break;
+        }
+        
+        switch (hs->ptr.pan_multiplier & 0x03) {
+        case 0:
+            pan_divisor = 1;
+            break;
+        case 1:
+            pan_divisor = 4;
+            break;
+        case 2:
+            pan_divisor = 8;
+            break;
+        default:
+            pan_divisor = 16;
+            break;
+        }
+        
+        if (wheel_divisor > 1) {
+            dz /= wheel_divisor;
             if (!dz && raw_dz) {
                 dz = raw_dz > 0 ? 1 : -1;
             }
         }
 
-        if (hs->ptr.pan_multiplier == 1) {
-            pan /= 4;
+        if (pan_divisor > 1) {
+            pan /= pan_divisor;
             if (!pan && raw_pan) {
                 pan = raw_pan > 0 ? 1 : -1;
             }
