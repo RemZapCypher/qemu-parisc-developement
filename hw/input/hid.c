@@ -152,6 +152,10 @@ static void hid_pointer_event(DeviceState *dev, QemuConsole *src,
                 e->dz--;
             } else if (btn->button == INPUT_BUTTON_WHEEL_DOWN) {
                 e->dz++;
+            } else if (btn->button == INPUT_BUTTON_WHEEL_LEFT) {
+                e->pan--;
+            } else if (btn->button == INPUT_BUTTON_WHEEL_RIGHT) {
+                e->pan++;
             }
         } else {
             e->buttons_state &= ~bmap[btn->button];
@@ -208,6 +212,8 @@ static void hid_pointer_sync(DeviceState *dev)
         }
         prev->dz += curr->dz;
         curr->dz = 0;
+        prev->pan += curr->pan;
+        curr->pan = 0;
     } else {
         /* prepare next (clear rel, copy abs + btns) */
         if (hs->kind == HID_MOUSE) {
@@ -218,6 +224,7 @@ static void hid_pointer_sync(DeviceState *dev)
             next->ydy = curr->ydy;
         }
         next->dz = 0;
+        next->pan = 0;
         next->buttons_state = curr->buttons_state;
         /* make current guest visible, notify guest */
         hs->n++;
@@ -357,7 +364,8 @@ void hid_pointer_activate(HIDState *hs)
 
 int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
 {
-    int dx, dy, dz, l;
+    int dx, dy, dz, pan, l;
+    int raw_dz, raw_pan;
     int index;
     HIDPointerEvent *e;
 
@@ -381,9 +389,31 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
     }
     dz = int_clamp(e->dz, -127, 127);
     e->dz -= dz;
+    pan = int_clamp(e->pan, -127, 127);
+    e->pan -= pan;
+
+    raw_dz = dz;
+    raw_pan = pan;
+
+    if (hs->kind == HID_MOUSE && hs->protocol != 0) {
+        if (hs->ptr.wheel_multiplier == 1) {
+            dz /= 4;
+            if (!dz && raw_dz) {
+                dz = raw_dz > 0 ? 1 : -1;
+            }
+        }
+
+        if (hs->ptr.pan_multiplier == 1) {
+            pan /= 4;
+            if (!pan && raw_pan) {
+                pan = raw_pan > 0 ? 1 : -1;
+            }
+        }
+    }
 
     if (hs->n &&
         !e->dz &&
+        !e->pan &&
         (hs->kind == HID_TABLET || (!e->xdx && !e->ydy))) {
         /* that deals with this event */
         QUEUE_INCR(hs->head);
@@ -392,20 +422,40 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
 
     /* Appears we have to invert the wheel direction */
     dz = 0 - dz;
+    pan = 0 - pan;
     l = 0;
+
     switch (hs->kind) {
     case HID_MOUSE:
-        if (len > l) {
-            buf[l++] = e->buttons_state;
-        }
-        if (len > l) {
-            buf[l++] = dx;
-        }
-        if (len > l) {
-            buf[l++] = dy;
-        }
-        if (len > l) {
-            buf[l++] = dz;
+        if (hs->protocol == 0) {
+            if (len > l) {
+                buf[l++] = e->buttons_state;
+            }
+            if (len > l) {
+                buf[l++] = dx;
+            }
+            if (len > l) {
+                buf[l++] = dy;
+            }
+        } else {
+            if (len > l) {
+                buf[l++] = 0x01;
+            }
+            if (len > l) {
+                buf[l++] = e->buttons_state;
+            }
+            if (len > l) {
+                buf[l++] = dx;
+            }
+            if (len > l) {
+                buf[l++] = dy;
+            }
+            if (len > l) {
+                buf[l++] = dz;
+            }
+            if (len > l) {
+                buf[l++] = pan;
+            }
         }
         break;
 
@@ -495,6 +545,8 @@ void hid_reset(HIDState *hs)
     case HID_MOUSE:
     case HID_TABLET:
         memset(hs->ptr.queue, 0, sizeof(hs->ptr.queue));
+        hs->ptr.wheel_multiplier = 0;
+        hs->ptr.pan_multiplier = 0;
         break;
     }
     hs->head = 0;
@@ -586,6 +638,7 @@ static const VMStateDescription vmstate_hid_ptr_queue = {
         VMSTATE_INT32(xdx, HIDPointerEvent),
         VMSTATE_INT32(ydy, HIDPointerEvent),
         VMSTATE_INT32(dz, HIDPointerEvent),
+        VMSTATE_INT32(pan, HIDPointerEvent),
         VMSTATE_INT32(buttons_state, HIDPointerEvent),
         VMSTATE_END_OF_LIST()
     }
@@ -603,6 +656,8 @@ const VMStateDescription vmstate_hid_ptr_device = {
         VMSTATE_UINT32(n, HIDState),
         VMSTATE_INT32(protocol, HIDState),
         VMSTATE_UINT8(idle, HIDState),
+        VMSTATE_UINT8(ptr.wheel_multiplier, HIDState),
+        VMSTATE_UINT8(ptr.pan_multiplier, HIDState),
         VMSTATE_END_OF_LIST(),
     }
 };
