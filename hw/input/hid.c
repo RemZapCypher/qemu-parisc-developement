@@ -365,7 +365,6 @@ void hid_pointer_activate(HIDState *hs)
 int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
 {
     int dx, dy, dz, pan, l;
-    int raw_dz, raw_pan;
     int wheel_divisor, pan_divisor;
     int index;
     HIDPointerEvent *e;
@@ -393,8 +392,6 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
     pan = int_clamp(e->pan, -127, 127);
     e->pan -= pan;
 
-    raw_dz = dz;
-    raw_pan = pan;
 
     if (hs->kind == HID_MOUSE && hs->protocol != 0) {
         switch (hs->ptr.wheel_multiplier & 0x03) {
@@ -428,17 +425,19 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
         }
         
         if (wheel_divisor > 1) {
-            dz /= wheel_divisor;
-            if (!dz && raw_dz) {
-                dz = raw_dz > 0 ? 1 : -1;
-            }
+            hs->ptr.wheel_residual += dz;
+            dz = hs->ptr.wheel_residual / wheel_divisor;
+            hs->ptr.wheel_residual -= dz * wheel_divisor;
+        } else {
+            hs->ptr.wheel_residual = 0;
         }
 
         if (pan_divisor > 1) {
-            pan /= pan_divisor;
-            if (!pan && raw_pan) {
-                pan = raw_pan > 0 ? 1 : -1;
-            }
+            hs->ptr.pan_residual += pan;
+            pan = hs->ptr.pan_residual / pan_divisor;
+            hs->ptr.pan_residual -= pan * pan_divisor;
+        } else {
+            hs->ptr.pan_residual = 0;
         }
     }
 
@@ -467,6 +466,9 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
             }
             if (len > l) {
                 buf[l++] = dy;
+            }
+            if (len > l) {
+                buf[l++] = dz;
             }
         } else {
             if (len > l) {
@@ -576,8 +578,11 @@ void hid_reset(HIDState *hs)
     case HID_MOUSE:
     case HID_TABLET:
         memset(hs->ptr.queue, 0, sizeof(hs->ptr.queue));
+        hs->ptr.mouse_grabbed = 0;
         hs->ptr.wheel_multiplier = 0;
         hs->ptr.pan_multiplier = 0;
+        hs->ptr.wheel_residual = 0;
+        hs->ptr.pan_residual = 0;
         break;
     }
     hs->head = 0;
@@ -689,6 +694,8 @@ const VMStateDescription vmstate_hid_ptr_device = {
         VMSTATE_UINT8(idle, HIDState),
         VMSTATE_UINT8(ptr.wheel_multiplier, HIDState),
         VMSTATE_UINT8(ptr.pan_multiplier, HIDState),
+        VMSTATE_INT32(ptr.wheel_residual, HIDState),
+        VMSTATE_INT32(ptr.pan_residual, HIDState),
         VMSTATE_END_OF_LIST(),
     }
 };

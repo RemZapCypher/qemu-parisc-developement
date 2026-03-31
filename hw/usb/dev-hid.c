@@ -673,20 +673,27 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
         break;
     case HID_GET_REPORT:
         {
+            uint8_t mult;
             uint8_t report_type = (value >> 8) & 0xFF;
             uint8_t report_id = value & 0xFF;
         
             if (report_type == 0x03 && report_id == 0x02 &&
                 hs->kind == HID_MOUSE) {
                 
-                if (length < 2) {
+                if (length < 1) {
                     goto fail;
                 }
-            
-                data[0] = 0x02;
-                data[1] = ((hs->ptr.pan_multiplier & 0x03) << 2) |
-                          (hs->ptr.wheel_multiplier & 0x03);
-                p->actual_length = 2;
+
+                mult = ((hs->ptr.pan_multiplier & 0x03) << 2) |
+                       (hs->ptr.wheel_multiplier & 0x03);
+                if (length >= 2) {
+                    data[0] = 0x02;
+                    data[1] = mult;
+                    p->actual_length = 2;
+                } else {
+                    data[0] = mult;
+                    p->actual_length = 1;
+                }
             
             } else if (hs->kind == HID_MOUSE || hs->kind == HID_TABLET) {
                 p->actual_length = hid_pointer_poll(hs, data, length);
@@ -699,22 +706,25 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
         break;
     case HID_SET_REPORT:
         {
+            uint8_t mult;
             uint8_t report_type = (value >> 8) & 0xFF;
             uint8_t report_id = value & 0xFF;
         
             if (report_type == 0x03 && report_id == 0x02 &&
                 hs->kind == HID_MOUSE) {
                 
-                if (length < 2) {
+                if (length < 1) {
                     goto fail;
                 }
-            
-                if (data[0] != 0x02) {
-                    goto fail;
+
+                if (length >= 2 && data[0] == 0x02) {
+                    mult = data[1];
+                } else {
+                    mult = data[0];
                 }
             
-                hs->ptr.wheel_multiplier = data[1] & 0x03;
-                hs->ptr.pan_multiplier = (data[1] >> 2) & 0x03;
+                hs->ptr.wheel_multiplier = mult & 0x03;
+                hs->ptr.pan_multiplier = (mult >> 2) & 0x03;
                 p->actual_length = length;
             
             } else if (hs->kind == HID_KEYBOARD) {
