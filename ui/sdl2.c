@@ -576,8 +576,10 @@ static void handle_mousewheel(SDL_Event *ev)
         dx = -dx;
         dy = -dy;
     }
-    int wheel_y = (int)roundf(dy * 120.0f); // / 120.0f);
-    int pan_x   = (int)roundf(dx * 120.0f); // / 120.0f);
+    int wheel_y = (int)roundf(dy * 120.0f);
+    int pan_x   = (int)roundf(dx * 120.0f);
+    fprintf(stderr, "SDL_WHEEL: preciseX=%.6f preciseY=%.6f -> pan_x=%d wheel_y=%d\n",
+            dx, dy, pan_x, wheel_y);
     if (wheel_y) {
         qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_WHEEL,  wheel_y);
     }

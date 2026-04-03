@@ -117,12 +117,15 @@ static const uint8_t qemu_mouse_hid_report_descriptor[] = {
           0x85, 0x02,   /*       Report ID (2) */
           0x09, 0x48,   /*       Usage (Resolution Multiplier) */
           0x15, 0x00,   /*       Logical Minimum (0) */
-          0x25, 0x03,   /*       Logical Maximum (3) */
+          0x25, 0x01,   /*       Logical Maximum (1) */
           0x35, 0x01,   /*       Physical Minimum (1) */
           0x45, 0x78,   /*       Physical Maximum (120) */
           0x75, 0x02,   /*       Report Size (2) */
           0x95, 0x01,   /*       Report Count (1) */
           0xB1, 0x02,   /*       Feature (Data,Var,Abs) */
+          0x75, 0x06,   /*       Report Size (6) — pad to byte boundary */
+          0x95, 0x01,   /*       Report Count (1) */
+          0xB1, 0x01,   /*       Feature (Const) */
 
           /* Input report ID 1: wheel 16-bit */
           0x85, 0x01,   /*       Report ID (1) */
@@ -144,15 +147,15 @@ static const uint8_t qemu_mouse_hid_report_descriptor[] = {
           0x85, 0x02,   /*       Report ID (2) */
           0x09, 0x48,   /*       Usage (Resolution Multiplier) */
           0x15, 0x00,   /*       Logical Minimum (0) */
-          0x25, 0x03,   /*       Logical Maximum (3) */
+          0x25, 0x01,   /*       Logical Maximum (1) */
           0x35, 0x01,   /*       Physical Minimum (1) */
           0x45, 0x78,   /*       Physical Maximum (120) */
           0x75, 0x02,   /*       Report Size (2) */
           0x95, 0x01,   /*       Report Count (1) */
           0xB1, 0x02,   /*       Feature (Data,Var,Abs) */
 
-          /* 4-bit padding to complete feature report ID 2 to 1 byte */
-          0x75, 0x04,   /*       Report Size (4) */
+          /* 6-bit padding to complete feature report ID 2 to 1 byte */
+          0x75, 0x06,   /*       Report Size (6) */
           0x95, 0x01,   /*       Report Count (1) */
           0xB1, 0x01,   /*       Feature (Const) */
 
@@ -686,9 +689,9 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
                     goto fail;
                 }
                 data[0] = 0x02;
-                data[1] = (hs->ptr.wheel_multiplier & 0x03) |
-                          ((hs->ptr.pan_multiplier & 0x03) << 2);
-                p->actual_length = 2;
+                data[1] = hs->ptr.wheel_multiplier & 0x01;
+                data[2] = hs->ptr.pan_multiplier & 0x01;
+                p->actual_length = 3;
             } else if (hs->kind == HID_MOUSE || hs->kind == HID_TABLET) {
                 p->actual_length = hid_pointer_poll(hs, data, length);
             } else if (hs->kind == HID_KEYBOARD) {
@@ -709,8 +712,10 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
                     goto fail;
                 }
                 if (length >= 2 && data[0] == 0x02) {
-                    hs->ptr.wheel_multiplier = data[1] & 0x03;
-                    hs->ptr.pan_multiplier   = (data[1] >> 2) & 0x03;
+                    hs->ptr.wheel_multiplier = data[1] & 0x01;
+                    if (length >= 3) {
+                        hs->ptr.pan_multiplier = data[2] & 0x01;
+                    }
                 }
                 p->actual_length = length;
             } else if (hs->kind == HID_KEYBOARD) {

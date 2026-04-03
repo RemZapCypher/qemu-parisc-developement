@@ -152,13 +152,13 @@ static void hid_pointer_event(DeviceState *dev, QemuConsole *src,
         if (btn->down) {
             e->buttons_state |= bmap[btn->button];
             if (btn->button == INPUT_BUTTON_WHEEL_UP) {
-                e->dz--;
+                e->dz -= 2;
             } else if (btn->button == INPUT_BUTTON_WHEEL_DOWN) {
-                e->dz++;
+                e->dz += 2;
             } else if (btn->button == INPUT_BUTTON_WHEEL_LEFT) {
-                e->pan--;
+                e->pan -= 2;
             } else if (btn->button == INPUT_BUTTON_WHEEL_RIGHT) {
-                e->pan++;
+                e->pan += 2;
             }
         } else {
             e->buttons_state &= ~bmap[btn->button];
@@ -389,20 +389,6 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
         dx = e->xdx;
         dy = e->ydy;
     }
-    
-    // /* Apply multiplier to residuals before extraction for fine-grained accumulation */
-    // int dz_mult = 1;
-    // int pan_mult = 1;
-    // if (hs->ptr.wheel_multiplier > 0) {
-    //     dz_mult = (1 << hs->ptr.wheel_multiplier);
-    // }
-    // if (hs->ptr.pan_multiplier > 0) {
-    //     pan_mult = (1 << hs->ptr.pan_multiplier);
-    // }
-    
-    // /* Apply multiplier to residuals to maintain precision */
-    // e->dz *= dz_mult;
-    // e->pan *= pan_mult;
     
     dz  = int_clamp(e->dz,  -32767, 32767);
     e->dz  -= dz;
