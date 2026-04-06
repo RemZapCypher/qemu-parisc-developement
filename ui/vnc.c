@@ -1769,6 +1769,21 @@ static void check_pointer_type_change(Notifier *notifier, void *data)
     vs->absolute = absolute;
 }
 
+static void precise_wheel_event(VncState *vs, int16_t dz, int16_t pan)
+{
+    QemuConsole *con = vs->vd->dcl.con;
+
+    VNC_DEBUG("VNC_WHEEL: dz=%d pan=%d\n", dz, pan);
+
+    if (dz) {
+        qemu_input_queue_rel(con, INPUT_AXIS_WHEEL, dz);
+    }
+    if (pan) {
+        qemu_input_queue_rel(con, INPUT_AXIS_PAN, pan);
+    }
+    qemu_input_event_sync();
+}
+
 static void pointer_event(VncState *vs, int button_mask, int x, int y)
 {
     static uint32_t bmap[INPUT_BUTTON__MAX] = {
@@ -1777,6 +1792,8 @@ static void pointer_event(VncState *vs, int button_mask, int x, int y)
         [INPUT_BUTTON_RIGHT]      = 0x04,
         [INPUT_BUTTON_WHEEL_UP]   = 0x08,
         [INPUT_BUTTON_WHEEL_DOWN] = 0x10,
+        [INPUT_BUTTON_WHEEL_LEFT] = 0x20,
+        [INPUT_BUTTON_WHEEL_RIGHT]= 0x40,
     };
     QemuConsole *con = vs->vd->dcl.con;
     int width = pixman_image_get_width(vs->vd->server);
@@ -2549,6 +2566,16 @@ static int protocol_client_msg(VncState *vs, uint8_t *data, size_t len)
                                                read_u32(data, 8));
             ext_key_event(vs, read_u16(data, 2),
                           read_u32(data, 4), read_u32(data, 8));
+            break;
+        case VNC_MSG_CLIENT_QEMU_WHEEL_EVENT:
+            if (len == 2)
+                return 6;
+
+            {
+                int16_t dz  = (int16_t)read_u16(data, 2);
+                int16_t pan = (int16_t)read_u16(data, 4);
+                precise_wheel_event(vs, dz, pan);
+            }
             break;
         case VNC_MSG_CLIENT_QEMU_AUDIO:
             if (!vnc_has_feature(vs, VNC_FEATURE_AUDIO)) {

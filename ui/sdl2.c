@@ -34,6 +34,7 @@
 #include "system/system.h"
 #include "qemu/log.h"
 #include "qemu-main.h"
+#include <math.h>
 
 #ifdef CONFIG_X11
 #include <X11/Xlib.h>
@@ -559,33 +560,45 @@ static void handle_mousebutton(SDL_Event *ev)
         sdl_send_mouse_event(scon, 0, 0, x, y, buttonstate);
     }
 }
-
 static void handle_mousewheel(SDL_Event *ev)
 {
-    struct sdl2_console *scon = get_scon_from_window(ev->wheel.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
     SDL_MouseWheelEvent *wev = &ev->wheel;
-    InputButton btn;
 
-    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
+    if (!qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    float dx = wev->preciseX;
+    float dy = wev->preciseY;
+    if (wev->direction == SDL_MOUSEWHEEL_FLIPPED) {
+        dx = -dx;
+        dy = -dy;
+    }
+    int wheel_y = (int)roundf(dy * 100.0f);
+    int pan_x   = (int)roundf(dx * 100.0f);
+    if (wheel_y) {
+        qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_WHEEL,  wheel_y);
+    }
+    if (pan_x) {
+        qemu_input_queue_rel(scon->dcl.con, INPUT_AXIS_PAN,    pan_x);
+    }
+    qemu_input_event_sync();
+#else
+    InputButton btn;
     if (wev->y > 0) {
         btn = INPUT_BUTTON_WHEEL_UP;
     } else if (wev->y < 0) {
         btn = INPUT_BUTTON_WHEEL_DOWN;
-    } else if (wev->x < 0) {
-        btn = INPUT_BUTTON_WHEEL_RIGHT;
-    } else if (wev->x > 0) {
-        btn = INPUT_BUTTON_WHEEL_LEFT;
     } else {
         return;
     }
-
     qemu_input_queue_btn(scon->dcl.con, btn, true);
     qemu_input_event_sync();
     qemu_input_queue_btn(scon->dcl.con, btn, false);
     qemu_input_event_sync();
+#endif
 }
 
 static void handle_windowevent(SDL_Event *ev)

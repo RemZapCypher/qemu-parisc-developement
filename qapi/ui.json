@@ -1073,7 +1073,7 @@
 # Since: 2.0
 ##
 { 'enum'  : 'InputAxis',
-  'data'  : [ 'x', 'y' ] }
+  'data'  : [ 'x', 'y', 'wheel', 'pan' ] }
 
 ##
 # @InputMultiTouchType:

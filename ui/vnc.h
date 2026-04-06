@@ -511,6 +511,7 @@ enum VncFeatures {
 /* QEMU client -> server message IDs */
 #define VNC_MSG_CLIENT_QEMU_EXT_KEY_EVENT         0
 #define VNC_MSG_CLIENT_QEMU_AUDIO                 1
+#define VNC_MSG_CLIENT_QEMU_WHEEL_EVENT           2
 
 /* QEMU server -> client message IDs */
 #define VNC_MSG_SERVER_QEMU_AUDIO                 1

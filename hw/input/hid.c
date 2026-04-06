@@ -132,9 +132,12 @@ static void hid_pointer_event(DeviceState *dev, QemuConsole *src,
             e->xdx += move->value;
         } else if (move->axis == INPUT_AXIS_Y) {
             e->ydy += move->value;
+        } else if (move->axis == INPUT_AXIS_WHEEL) {
+            e->dz += move->value;
+        } else if (move->axis == INPUT_AXIS_PAN) {
+            e->pan += move->value;
         }
         break;
-
     case INPUT_EVENT_KIND_ABS:
         move = evt->u.abs.data;
         if (move->axis == INPUT_AXIS_X) {
@@ -149,9 +152,13 @@ static void hid_pointer_event(DeviceState *dev, QemuConsole *src,
         if (btn->down) {
             e->buttons_state |= bmap[btn->button];
             if (btn->button == INPUT_BUTTON_WHEEL_UP) {
-                e->dz--;
+                e->dz -= 2;
             } else if (btn->button == INPUT_BUTTON_WHEEL_DOWN) {
-                e->dz++;
+                e->dz += 2;
+            } else if (btn->button == INPUT_BUTTON_WHEEL_LEFT) {
+                e->pan -= 2;
+            } else if (btn->button == INPUT_BUTTON_WHEEL_RIGHT) {
+                e->pan += 2;
             }
         } else {
             e->buttons_state &= ~bmap[btn->button];
@@ -208,6 +215,8 @@ static void hid_pointer_sync(DeviceState *dev)
         }
         prev->dz += curr->dz;
         curr->dz = 0;
+        prev->pan += curr->pan;
+        curr->pan = 0;
     } else {
         /* prepare next (clear rel, copy abs + btns) */
         if (hs->kind == HID_MOUSE) {
@@ -218,6 +227,7 @@ static void hid_pointer_sync(DeviceState *dev)
             next->ydy = curr->ydy;
         }
         next->dz = 0;
+        next->pan = 0;
         next->buttons_state = curr->buttons_state;
         /* make current guest visible, notify guest */
         hs->n++;
@@ -357,7 +367,7 @@ void hid_pointer_activate(HIDState *hs)
 
 int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
 {
-    int dx, dy, dz, l;
+    int dx, dy, dz, pan, l;
     int index;
     HIDPointerEvent *e;
 
@@ -371,19 +381,23 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
     e = &hs->ptr.queue[index & QUEUE_MASK];
 
     if (hs->kind == HID_MOUSE) {
-        dx = int_clamp(e->xdx, -127, 127);
-        dy = int_clamp(e->ydy, -127, 127);
+        dx = int_clamp(e->xdx, -200, 200);
+        dy = int_clamp(e->ydy, -200, 200);
         e->xdx -= dx;
         e->ydy -= dy;
     } else {
         dx = e->xdx;
         dy = e->ydy;
     }
-    dz = int_clamp(e->dz, -127, 127);
-    e->dz -= dz;
+
+    dz  = int_clamp(e->dz,  -32767, 32767);
+    e->dz  -= dz;
+    pan = int_clamp(e->pan, -32767, 32767);
+    e->pan -= pan;
 
     if (hs->n &&
         !e->dz &&
+        !e->pan &&
         (hs->kind == HID_TABLET || (!e->xdx && !e->ydy))) {
         /* that deals with this event */
         QUEUE_INCR(hs->head);
@@ -392,20 +406,42 @@ int hid_pointer_poll(HIDState *hs, uint8_t *buf, int len)
 
     /* Appears we have to invert the wheel direction */
     dz = 0 - dz;
+    pan = 0 - pan;
     l = 0;
+
     switch (hs->kind) {
     case HID_MOUSE:
-        if (len > l) {
-            buf[l++] = e->buttons_state;
-        }
-        if (len > l) {
-            buf[l++] = dx;
-        }
-        if (len > l) {
-            buf[l++] = dy;
-        }
-        if (len > l) {
-            buf[l++] = dz;
+        if (hs->protocol == 0) {
+            if (len > l) { buf[l++] = e->buttons_state; }
+            if (len > l) { buf[l++] = (uint8_t)(int8_t)dx; }
+            if (len > l) { buf[l++] = (uint8_t)(int8_t)dy; }
+            if (len > l) { buf[l++] = (uint8_t)(int8_t)int_clamp(dz, -127, 127); }
+
+        } else {
+            if (len > l) {
+                buf[l++] = 0x01;
+            }
+            if (len > l) {
+                buf[l++] = e->buttons_state;
+            }
+            if (len > l) {
+                buf[l++] = dx;
+            }
+            if (len > l) {
+                buf[l++] = dy;
+            }
+            if (len > l) {
+                buf[l++] = (uint8_t)(dz & 0xff);
+            }
+            if (len > l) {
+                buf[l++] = (uint8_t)((dz >> 8) & 0xff);
+            }
+            if (len > l) {
+                buf[l++] = (uint8_t)(pan & 0xff);
+            }
+            if (len > l) {
+                buf[l++] = (uint8_t)((pan >> 8) & 0xff);
+            }
         }
         break;
 
@@ -495,6 +531,9 @@ void hid_reset(HIDState *hs)
     case HID_MOUSE:
     case HID_TABLET:
         memset(hs->ptr.queue, 0, sizeof(hs->ptr.queue));
+        hs->ptr.mouse_grabbed = 0;
+        hs->ptr.wheel_multiplier = 0;
+        hs->ptr.pan_multiplier = 0;
         break;
     }
     hs->head = 0;
@@ -586,6 +625,7 @@ static const VMStateDescription vmstate_hid_ptr_queue = {
         VMSTATE_INT32(xdx, HIDPointerEvent),
         VMSTATE_INT32(ydy, HIDPointerEvent),
         VMSTATE_INT32(dz, HIDPointerEvent),
+        VMSTATE_INT32(pan, HIDPointerEvent),
         VMSTATE_INT32(buttons_state, HIDPointerEvent),
         VMSTATE_END_OF_LIST()
     }
@@ -603,6 +643,8 @@ const VMStateDescription vmstate_hid_ptr_device = {
         VMSTATE_UINT32(n, HIDState),
         VMSTATE_INT32(protocol, HIDState),
         VMSTATE_UINT8(idle, HIDState),
+        VMSTATE_UINT8(ptr.wheel_multiplier, HIDState),
+        VMSTATE_UINT8(ptr.pan_multiplier, HIDState),
         VMSTATE_END_OF_LIST(),
     }
 };

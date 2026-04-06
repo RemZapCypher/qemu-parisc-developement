@@ -76,6 +76,107 @@ static const USBDescStrings desc_strings = {
     [STR_SERIAL_KEYBOARD]  = "68284",
 };
 
+static const uint8_t qemu_mouse_hid_report_descriptor[] = {
+    0x05, 0x01,         /* Usage Page (Generic Desktop) */
+    0x09, 0x02,         /* Usage (Mouse) */
+    0xA1, 0x01,         /* Collection (Application) */
+
+      0x09, 0x01,       /*   Usage (Pointer) */
+      0xA1, 0x00,       /*   Collection (Physical) */
+
+        /* Buttons: Report ID 1, 5 bits */
+        0x85, 0x01,     /*     Report ID (1) */
+        0x05, 0x09,     /*     Usage Page (Button) */
+        0x19, 0x01,     /*     Usage Minimum (1) */
+        0x29, 0x05,     /*     Usage Maximum (5) */
+        0x15, 0x00,     /*     Logical Minimum (0) */
+        0x25, 0x01,     /*     Logical Maximum (1) */
+        0x95, 0x05,     /*     Report Count (5) */
+        0x75, 0x01,     /*     Report Size (1) */
+        0x81, 0x02,     /*     Input (Data,Var,Abs) */
+
+        /* Padding: 3 bits to complete byte */
+        0x95, 0x01,     /*     Report Count (1) */
+        0x75, 0x03,     /*     Report Size (3) */
+        0x81, 0x01,     /*     Input (Const) */
+
+        /* X, Y: 8-bit */
+        0x05, 0x01,     /*     Usage Page (Generic Desktop) */
+        0x09, 0x30,     /*     Usage (X) */
+        0x09, 0x31,     /*     Usage (Y) */
+        0x15, 0x81,     /*     Logical Minimum (-127) */
+        0x25, 0x7F,     /*     Logical Maximum (127) */
+        0x75, 0x08,     /*     Report Size (8) */
+        0x95, 0x02,     /*     Report Count (2) */
+        0x81, 0x06,     /*     Input (Data,Var,Rel) */
+
+        /* Vertical wheel collection */
+        0xA1, 0x02,     /*     Collection (Logical) */
+
+          /* Feature report ID 2: vertical multiplier (2 bits) */
+          0x85, 0x02,   /*       Report ID (2) */
+          0x09, 0x48,   /*       Usage (Resolution Multiplier) */
+          0x15, 0x00,   /*       Logical Minimum (0) */
+          0x25, 0x01,   /*       Logical Maximum (1) */
+          0x35, 0x01,   /*       Physical Minimum (1) */
+          0x45, 0x64,   /*       Physical Maximum (100) */
+          0x75, 0x02,   /*       Report Size (2) */
+          0x95, 0x01,   /*       Report Count (1) */
+          0xB1, 0x02,   /*       Feature (Data,Var,Abs) */
+          0x75, 0x06,   /*       Report Size (6) */
+          0x95, 0x01,   /*       Report Count (1) */
+          0xB1, 0x01,   /*       Feature (Const) */
+
+          /* Input report ID 1: wheel 16-bit */
+          0x85, 0x01,   /*       Report ID (1) */
+          0x09, 0x38,   /*       Usage (Wheel) */
+          0x16, 0x00, 0x80,  /*  Logical Minimum (-32768) */
+          0x26, 0xFF, 0x7F,  /*  Logical Maximum (32767) */
+          0x35, 0x00,   /*       Physical Minimum (0) */
+          0x45, 0x00,   /*       Physical Maximum (0) */
+          0x75, 0x10,   /*       Report Size (16) */
+          0x95, 0x01,   /*       Report Count (1) */
+          0x81, 0x06,   /*       Input (Data,Var,Rel) */
+
+        0xC0,           /*     End Collection (Logical) */
+
+        /* Horizontal pan collection */
+        0xA1, 0x02,     /*     Collection (Logical) */
+
+          /* Feature report ID 2: pan multiplier (2 bits) + 4-bit padding */
+          0x85, 0x02,   /*       Report ID (2) */
+          0x09, 0x48,   /*       Usage (Resolution Multiplier) */
+          0x15, 0x00,   /*       Logical Minimum (0) */
+          0x25, 0x01,   /*       Logical Maximum (1) */
+          0x35, 0x01,   /*       Physical Minimum (1) */
+          0x45, 0x64,   /*       Physical Maximum (100) */
+          0x75, 0x02,   /*       Report Size (2) */
+          0x95, 0x01,   /*       Report Count (1) */
+          0xB1, 0x02,   /*       Feature (Data,Var,Abs) */
+
+          /* 6-bit padding to complete feature report ID 2 to 1 byte */
+          0x75, 0x06,   /*       Report Size (6) */
+          0x95, 0x01,   /*       Report Count (1) */
+          0xB1, 0x01,   /*       Feature (Const) */
+
+          /* Input report ID 1: pan 16-bit */
+          0x85, 0x01,   /*       Report ID (1) */
+          0x05, 0x0C,   /*       Usage Page (Consumer Devices) */
+          0x0A, 0x38, 0x02,   /*  Usage (AC Pan) */
+          0x16, 0x00, 0x80,   /*  Logical Minimum (-32768) */
+          0x26, 0xFF, 0x7F,   /*  Logical Maximum (32767) */
+          0x35, 0x00,   /*       Physical Minimum (0) */
+          0x45, 0x00,   /*       Physical Maximum (0) */
+          0x75, 0x10,   /*       Report Size (16) */
+          0x95, 0x01,   /*       Report Count (1) */
+          0x81, 0x06,   /*       Input (Data,Var,Rel) */
+
+        0xC0,           /*     End Collection (Logical) */
+
+      0xC0,             /*   End Collection (Physical) */
+    0xC0,               /* End Collection (Application) */
+};
+
 static const USBDescIface desc_iface_mouse = {
     .bInterfaceNumber              = 0,
     .bNumEndpoints                 = 1,
@@ -93,7 +194,7 @@ static const USBDescIface desc_iface_mouse = {
                 0x00,          /*  u8  country_code */
                 0x01,          /*  u8  num_descriptors */
                 USB_DT_REPORT, /*  u8  type: Report */
-                52, 0,         /*  u16 len */
+                sizeof(qemu_mouse_hid_report_descriptor), 0,    /*  u16 len */
             },
         },
     },
@@ -101,7 +202,7 @@ static const USBDescIface desc_iface_mouse = {
         {
             .bEndpointAddress      = USB_DIR_IN | 0x01,
             .bmAttributes          = USB_ENDPOINT_XFER_INT,
-            .wMaxPacketSize        = 4,
+            .wMaxPacketSize        = 8,
             .bInterval             = 0x0a,
         },
     },
@@ -124,7 +225,7 @@ static const USBDescIface desc_iface_mouse2 = {
                 0x00,          /*  u8  country_code */
                 0x01,          /*  u8  num_descriptors */
                 USB_DT_REPORT, /*  u8  type: Report */
-                52, 0,         /*  u16 len */
+                sizeof(qemu_mouse_hid_report_descriptor), 0,    /*  u16 len */
             },
         },
     },
@@ -132,7 +233,7 @@ static const USBDescIface desc_iface_mouse2 = {
         {
             .bEndpointAddress      = USB_DIR_IN | 0x01,
             .bmAttributes          = USB_ENDPOINT_XFER_INT,
-            .wMaxPacketSize        = 4,
+            .wMaxPacketSize        = 8,
             .bInterval             = 7, /* 2 ^ (8-1) * 125 usecs = 8 ms */
         },
     },
@@ -453,36 +554,6 @@ static const USBDesc desc_keyboard2 = {
     .msos = &desc_msos_suspend,
 };
 
-static const uint8_t qemu_mouse_hid_report_descriptor[] = {
-    0x05, 0x01,		/* Usage Page (Generic Desktop) */
-    0x09, 0x02,		/* Usage (Mouse) */
-    0xa1, 0x01,		/* Collection (Application) */
-    0x09, 0x01,		/*   Usage (Pointer) */
-    0xa1, 0x00,		/*   Collection (Physical) */
-    0x05, 0x09,		/*     Usage Page (Button) */
-    0x19, 0x01,		/*     Usage Minimum (1) */
-    0x29, 0x05,		/*     Usage Maximum (5) */
-    0x15, 0x00,		/*     Logical Minimum (0) */
-    0x25, 0x01,		/*     Logical Maximum (1) */
-    0x95, 0x05,		/*     Report Count (5) */
-    0x75, 0x01,		/*     Report Size (1) */
-    0x81, 0x02,		/*     Input (Data, Variable, Absolute) */
-    0x95, 0x01,		/*     Report Count (1) */
-    0x75, 0x03,		/*     Report Size (3) */
-    0x81, 0x01,		/*     Input (Constant) */
-    0x05, 0x01,		/*     Usage Page (Generic Desktop) */
-    0x09, 0x30,		/*     Usage (X) */
-    0x09, 0x31,		/*     Usage (Y) */
-    0x09, 0x38,		/*     Usage (Wheel) */
-    0x15, 0x81,		/*     Logical Minimum (-0x7f) */
-    0x25, 0x7f,		/*     Logical Maximum (0x7f) */
-    0x75, 0x08,		/*     Report Size (8) */
-    0x95, 0x03,		/*     Report Count (3) */
-    0x81, 0x06,		/*     Input (Data, Variable, Relative) */
-    0xc0,		/*   End Collection */
-    0xc0,		/* End Collection */
-};
-
 static const uint8_t qemu_tablet_hid_report_descriptor[] = {
     0x05, 0x01,		/* Usage Page (Generic Desktop) */
     0x09, 0x02,		/* Usage (Mouse) */
@@ -608,17 +679,50 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
         }
         break;
     case HID_GET_REPORT:
-        if (hs->kind == HID_MOUSE || hs->kind == HID_TABLET) {
-            p->actual_length = hid_pointer_poll(hs, data, length);
-        } else if (hs->kind == HID_KEYBOARD) {
-            p->actual_length = hid_keyboard_poll(hs, data, length);
+        {
+            uint8_t report_type = (value >> 8) & 0xFF;
+            uint8_t report_id = value & 0xFF;
+
+            if (report_type == 0x03 && report_id == 0x02 &&
+                (hs->kind == HID_MOUSE || hs->kind == HID_TABLET)) {
+                if (length < 2) {
+                    goto fail;
+                }
+                data[0] = 0x02;
+                data[1] = hs->ptr.wheel_multiplier & 0x01;
+                data[2] = hs->ptr.pan_multiplier & 0x01;
+                p->actual_length = 3;
+            } else if (hs->kind == HID_MOUSE || hs->kind == HID_TABLET) {
+                p->actual_length = hid_pointer_poll(hs, data, length);
+            } else if (hs->kind == HID_KEYBOARD) {
+                p->actual_length = hid_keyboard_poll(hs, data, length);
+            } else {
+                goto fail;
+            }
         }
         break;
     case HID_SET_REPORT:
-        if (hs->kind == HID_KEYBOARD) {
-            p->actual_length = hid_keyboard_write(hs, data, length);
-        } else {
-            goto fail;
+        {
+            uint8_t report_type = (value >> 8) & 0xFF;
+            uint8_t report_id = value & 0xFF;
+
+            if (report_type == 0x03 && report_id == 0x02 &&
+                (hs->kind == HID_MOUSE || hs->kind == HID_TABLET)) {
+                if (length < 1) {
+                    goto fail;
+                }
+                if (length >= 2 && data[0] == 0x02) {
+                    hs->ptr.wheel_multiplier = data[1] & 0x01;
+                    if (length >= 3) {
+                        hs->ptr.pan_multiplier = data[2] & 0x01;
+                    }
+                }
+                p->actual_length = length;
+            } else if (hs->kind == HID_KEYBOARD) {
+                p->actual_length = hid_keyboard_write(hs, data, length);
+            } else {
+                goto fail;
+            }
         }
         break;
     case HID_GET_PROTOCOL:
